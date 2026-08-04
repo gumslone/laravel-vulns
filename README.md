@@ -123,6 +123,46 @@ name (`CpeResolver`), or from your curated catalog if you bind
 `Contracts\CpeLookup`. Passing `PackageData::fromCpe(...)` — or `cpe23:` on the
 constructor — always wins over both.
 
+## Credentials & configuration
+
+No source needs a key to *work*; keys raise limits or unlock a feed:
+
+| Env var | Used by | Effect if unset |
+|---|---|---|
+| `NVD_API_KEY` | NVD | Still works at 5 req/30s instead of 50 — the source throttles itself either way. |
+| `GITHUB_TOKEN` | GitHub Advisories | **Repository** advisories still work; the registry GraphQL feed is skipped. |
+| `SNYK_API_TOKEN` + `SNYK_ORG_ID` | Snyk | Source stays disabled (it needs both). |
+
+OSV, CVE-Search and EUVD need no credentials at all.
+
+**In Laravel** — publish `config/vulns.php` and set the env vars; the provider
+passes each block to its source:
+
+```bash
+php artisan vendor:publish --tag=vulns-config
+```
+
+```dotenv
+NVD_API_KEY=…
+GITHUB_TOKEN=…
+SNYK_API_TOKEN=…
+SNYK_ORG_ID=…
+```
+
+**In plain PHP** — there is no config file; pass the block directly, so the
+credential comes from wherever you keep secrets:
+
+```php
+new NvdSource(new CpeResolver, options: [
+    'api_key' => getenv('NVD_API_KEY') ?: null,
+    'timeout' => 30,
+]);
+```
+
+Every source also understands `enabled`, `timeout`, `retry` and `base_url`
+(point CVE-Search or OSV at a self-hosted instance). Keys are read per request
+and never written anywhere by this package.
+
 ## Laravel
 
 Auto-discovered. Publish the config to tune sources:

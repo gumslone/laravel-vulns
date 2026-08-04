@@ -44,16 +44,25 @@ return [
     'cve_search' => [
         'enabled' => env('VULNS_CVE_SEARCH_ENABLED', true),
         'base_url' => env('VULNS_CVE_SEARCH_URL', 'https://cve.circl.lu/api'),
+        'page_size' => (int) env('VULNS_CVE_SEARCH_PAGE_SIZE', 100),
+        // Self-hosted instances often use a private CA; set false to skip
+        // certificate verification (public CIRCL should stay true).
+        'verify_tls' => env('VULNS_CVE_SEARCH_VERIFY_TLS', true),
+        'max_concurrency' => (int) env('VULNS_CVE_SEARCH_CONCURRENCY', 8),
     ],
 
     'euvd' => [
         'enabled' => env('VULNS_EUVD_ENABLED', true),
         'base_url' => env('VULNS_EUVD_URL', 'https://euvd.enisa.europa.eu/api'),
+        'max_concurrency' => (int) env('VULNS_EUVD_CONCURRENCY', 8),
     ],
 
     'snyk' => [
         'enabled' => env('VULNS_SNYK_ENABLED', false),
-        'token' => env('SNYK_API_TOKEN'),
+        // NB: the source reads `api_token`, not `token`.
+        'api_token' => env('SNYK_API_TOKEN'),
         'org_id' => env('SNYK_ORG_ID'),
+        'base_url' => env('VULNS_SNYK_URL', 'https://api.snyk.io'),
+        'max_concurrency' => (int) env('VULNS_SNYK_CONCURRENCY', 8),
     ],
 ];
