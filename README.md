@@ -135,12 +135,9 @@ No source needs a key to *work*; keys raise limits or unlock a feed:
 
 OSV, CVE-Search and EUVD need no credentials at all.
 
-**In Laravel** — publish `config/vulns.php` and set the env vars; the provider
-passes each block to its source:
-
-```bash
-php artisan vendor:publish --tag=vulns-config
-```
+**In Laravel — just set the env vars.** The package's config is merged
+automatically, so `app(VulnSearch::class)` and every `app(…Source::class)` pick
+the credentials up with no further wiring:
 
 ```dotenv
 NVD_API_KEY=…
@@ -148,6 +145,27 @@ GITHUB_TOKEN=…
 SNYK_API_TOKEN=…
 SNYK_ORG_ID=…
 ```
+
+```php
+$vulns = app(VulnSearch::class)->searchPurl('pkg:npm/lodash@4.17.20');
+// → OSV + GitHub + NVD (+ Snyk, once its two values are set) …
+```
+
+Publishing the config is optional — do it to change base URLs, cache TTLs,
+concurrency, or to toggle sources per environment:
+
+```bash
+php artisan vendor:publish --tag=vulns-config
+```
+
+```php
+// config/vulns.php
+'nvd' => ['enabled' => true, 'api_key' => env('NVD_API_KEY')],
+'snyk' => ['enabled' => true, 'api_token' => env('SNYK_API_TOKEN'), 'org_id' => env('SNYK_ORG_ID')],
+```
+
+Config beats env: anything you set in `config/vulns.php` (or at runtime with
+`config([...])`) is what the source receives.
 
 **In plain PHP** — there is no config file; pass the block directly, so the
 credential comes from wherever you keep secrets:
