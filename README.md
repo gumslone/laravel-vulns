@@ -23,6 +23,89 @@ service provider is optional sugar.
 composer require gumslone/laravel-vulns
 ```
 
+## Searching
+
+Every lookup starts from a `PackageData` — build one from a **purl**, a **CPE**,
+or explicit coordinates — and goes to one source or to all of them.
+
+### Search all sources at once
+
+```php
+use Gumslone\Vulns\VulnSearch;
+
+$search = app(VulnSearch::class);              // Laravel
+// $search = new VulnSearch([$osv, $nvd, …]);  // plain PHP
+
+$vulns = $search->searchPurl('pkg:npm/lodash@4.17.20');
+$vulns = $search->searchCpe('cpe:2.3:a:prasathmani:tiny_file_manager:2.6:*:*:*:*:*:*:*');
+$vulns = $search->search(new PackageData(name: 'lodash', version: '4.17.20', ecosystem: 'npm'));
+
+foreach ($vulns as $v) {
+    printf("%s  %s  %s\n", $v->vulnId, $v->severity->value, $v->cvssV3Score ?? '-');
+}
+```
+
+Results are **merged across sources** by canonical id (the CVE when any source
+knows one), aliases pooled, and the richest field kept — OSV's version ranges
+plus NVD's CVSS score end up on the same record, sorted by score.
+
+A source that fails does **not** abort the search; check `errors()` so an
+unreachable feed reads as "possibly incomplete", never as "clean":
+
+```php
+if ($search->errors()) {
+    logger()->warning('Vulnerability sources failed', $search->errors());
+}
+```
+
+Batching lets sources use their bulk endpoints and request pooling — one call
+for a whole lockfile, results keyed like the input:
+
+```php
+$byPackage = $search->searchBatch([
+    'lodash'  => PackageData::fromPurl('pkg:npm/lodash@4.17.20'),
+    'guzzle'  => PackageData::fromPurl('pkg:composer/guzzlehttp/guzzle@7.9.0'),
+]);
+$byPackage['lodash']; // VulnerabilityData[]
+```
+
+Look one advisory up by id across every source:
+
+```php
+$search->fetchById('CVE-2021-44228');
+$search->fetchById('GHSA-jfh8-c2jp-5v3q');
+```
+
+### Calling one source directly
+
+```php
+use Gumslone\Vulns\Data\PackageData;
+use Gumslone\Vulns\Sources\NvdSource;
+
+$nvd = app(NvdSource::class);                       // Laravel (config-wired)
+// $nvd = new NvdSource(new CpeResolver, options: ['api_key' => env('NVD_API_KEY')]);
+
+$vulns = $nvd->queryPackage(PackageData::fromCpe('cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*'));
+$vulns = $nvd->queryBatch([$pkgA, $pkgB]);          // batch/pooled where supported
+$one   = $nvd->fetchById('CVE-2021-44228');         // single advisory
+```
+
+### What each source needs
+
+| Source | Queried by | Needs | Notes |
+|---|---|---|---|
+| `OsvSource` | ecosystem + name + version; **purl** (deb/apk/rpm); **git commit** | — | Batch endpoint, pagination, payload cache. Unmapped ecosystems are skipped, not guessed. |
+| `NvdSource` | **CPE** | `api_key` recommended | 5 req/30s anonymous, 50/30s with a key — the source throttles itself. Parses `configurations` into real version ranges. |
+| `CveSearchSource` | **CPE** | — | CIRCL; records often carry no version data (treat as undeterminable). |
+| `GitHubAdvisorySource` | ecosystem + name (registry); **owner/repo** (repository advisories) | `token` for the registry feed | Repository advisories work **without** a token — they cover projects that are in no registry database. |
+| `EuvdSource` | ecosystem + name | — | ENISA EUVD. |
+| `SnykSource` | **purl** | `token` + `org_id` | Disabled unless both are configured. |
+
+A CPE-driven source given a package without a CPE derives one from the purl or
+name (`CpeResolver`), or from your curated catalog if you bind
+`Contracts\CpeLookup`. Passing `PackageData::fromCpe(...)` — or `cpe23:` on the
+constructor — always wins over both.
+
 ## Laravel
 
 Auto-discovered. Publish the config to tune sources:

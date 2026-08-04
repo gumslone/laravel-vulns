@@ -18,7 +18,9 @@ trait ResolvesLookupCpe
 {
     protected function resolveLookupCpe(PackageData $package): ?string
     {
-        return $this->cpeLookup?->bestCpe23($package->purl, $package->version)
+        // An explicitly supplied CPE is the caller's intent — never override it.
+        return $package->cpe23
+            ?? $this->cpeLookup?->bestCpe23($package->purl, $package->version)
             ?? $this->cpeResolver->resolveCpe23($package);
     }
 }

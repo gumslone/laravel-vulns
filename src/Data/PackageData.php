@@ -30,7 +30,63 @@ final class PackageData
         public readonly array $extra = [],
         /** @var string[] Names of packages this one requires (per its lockfile entry). */
         public readonly array $dependsOn = [],
+        /** Explicit CPE 2.3 for CPE-driven sources (NVD, CVE-Search); when
+         *  absent they derive one from the purl/name via CpeResolver. */
+        public readonly ?string $cpe23 = null,
     ) {}
+
+    /**
+     * Build a query target from a Package URL:
+     * `pkg:composer/vrana/adminer@5.5.1`. The purl's type becomes the
+     * ecosystem, and namespaced types keep the "namespace/name" convention
+     * ecosystem sources expect.
+     */
+    public static function fromPurl(string $purl): self
+    {
+        $parts = (new \Gumslone\Vulns\Support\PurlBuilder)->parse($purl);
+        $namespace = $parts['namespace'] ?? null;
+        $name = $parts['name'];
+
+        return new self(
+            name: $namespace !== null && $namespace !== '' ? "{$namespace}/{$name}" : $name,
+            version: $parts['version'] ?? null,
+            ecosystem: self::ecosystemForPurlType($parts['type']),
+            namespace: $namespace,
+            purl: $purl,
+        );
+    }
+
+    /**
+     * Build a query target from a CPE 2.3 string:
+     * `cpe:2.3:a:prasathmani:tiny_file_manager:2.6:*:*:*:*:*:*:*`. Only the
+     * CPE-driven sources (NVD, CVE-Search) can answer these.
+     */
+    public static function fromCpe(string $cpe23): self
+    {
+        $f = explode(':', $cpe23);
+        $product = $f[4] ?? '';
+        $version = ($f[5] ?? '*');
+
+        return new self(
+            name: $product !== '' ? $product : $cpe23,
+            version: in_array($version, ['*', '-', ''], true) ? null : $version,
+            ecosystem: 'generic',
+            cpe23: $cpe23,
+        );
+    }
+
+    /** PURL types whose name OSSaur-style ecosystems spell differently. */
+    private static function ecosystemForPurlType(string $type): string
+    {
+        return match ($type) {
+            'pypi' => 'pip',
+            'maven' => 'maven',
+            'golang' => 'go',
+            'cargo' => 'cargo',
+            'gem' => 'gem',
+            default => $type,
+        };
+    }
 
     public static function fromArray(array $data): self
     {
@@ -53,6 +109,7 @@ final class PackageData
             manifestChecksum: $data['manifest_checksum'] ?? null,
             extra: $data['extra'] ?? [],
             dependsOn: $data['depends_on'] ?? [],
+            cpe23: $data['cpe23'] ?? null,
         );
     }
 
@@ -77,6 +134,7 @@ final class PackageData
             'manifest_checksum' => $this->manifestChecksum,
             'extra' => $this->extra,
             'depends_on' => $this->dependsOn,
+            'cpe23' => $this->cpe23,
         ];
     }
 }

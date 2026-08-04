@@ -72,6 +72,9 @@ class VulnsServiceProvider extends ServiceProvider
             ->filter(fn (Source $source) => $source->isEnabled())
             ->values()
             ->all());
+
+        // The "ask everything" entry point: app(VulnSearch::class).
+        $this->app->singleton(VulnSearch::class, fn ($app) => new VulnSearch($app->tagged('vulns.sources')));
     }
 
     public function boot(): void
