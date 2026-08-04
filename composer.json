@@ -1,0 +1,42 @@
+{
+    "name": "gumslone/laravel-vulns",
+    "description": "Multi-source vulnerability lookups for PHP and Laravel: OSV, NVD, GitHub Advisories (registry + repository), EUVD, CVE-Search and Snyk behind one contract.",
+    "keywords": ["vulnerability", "cve", "osv", "nvd", "sca", "security", "laravel"],
+    "homepage": "https://github.com/gumslone/laravel-vulns",
+    "license": "MIT",
+    "type": "library",
+    "authors": [
+        {"name": "gumslone", "email": "gumslone@i.ua"}
+    ],
+    "require": {
+        "php": "^8.2",
+        "guzzlehttp/guzzle": "^7.8",
+        "illuminate/collections": "^11.0 || ^12.0 || ^13.0",
+        "psr/log": "^2.0 || ^3.0",
+        "psr/simple-cache": "^2.0 || ^3.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0 || ^10.0",
+        "pestphp/pest": "^3.0"
+    },
+    "autoload": {
+        "psr-4": {"Gumslone\\Vulns\\": "src/"}
+    },
+    "autoload-dev": {
+        "psr-4": {"Gumslone\\Vulns\\Tests\\": "tests/"}
+    },
+    "extra": {
+        "laravel": {
+            "providers": ["Gumslone\\Vulns\\VulnsServiceProvider"]
+        }
+    },
+    "config": {
+        "allow-plugins": {"pestphp/pest-plugin": true},
+        "sort-packages": true
+    },
+    "scripts": {
+        "test": "pest"
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
