@@ -58,6 +58,23 @@ if ($search->errors()) {
 }
 ```
 
+### Choosing which sources to search
+
+`only()` and `except()` return a restricted copy — the library equivalent of
+the CLI's `--source=`:
+
+```php
+$search->only('nvd')->searchCpe($cpe);              // one source
+$search->only(['osv', 'github'])->searchPurl($purl); // a subset
+$search->except('snyk')->search($package);           // everything but one
+
+$search->availableSources(); // ['osv','github','nvd','cve_search','euvd','snyk']
+$search->sources();          // the enabled subset this instance will query
+```
+
+An unknown name throws rather than quietly searching fewer feeds — a typo that
+silently narrowed the search would look exactly like "nothing found".
+
 Batching lets sources use their bulk endpoints and request pooling — one call
 for a whole lockfile, results keyed like the input:
 

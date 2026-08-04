@@ -142,3 +142,40 @@ it('fetches one advisory by id across sources', function () {
     expect($search->fetchById('CVE-2030-9')?->summary)->toBe('from a')
         ->and($search->fetchById('CVE-1999-0001'))->toBeNull();
 });
+
+it('restricts the search to named sources with only()', function () {
+    $osvHit = new VulnerabilityData(vulnId: 'CVE-2030-10', source: 'osv');
+    $nvdHit = new VulnerabilityData(vulnId: 'CVE-2030-11', source: 'nvd');
+    $search = new VulnSearch([
+        fakeSource('osv', ['x' => [$osvHit]]),
+        fakeSource('nvd', ['x' => [$nvdHit]]),
+    ]);
+    $package = new PackageData(name: 'x', version: '1.0', ecosystem: 'npm');
+
+    expect($search->search($package))->toHaveCount(2)
+        ->and($search->only('osv')->search($package))->toHaveCount(1)
+        ->and($search->only('osv')->search($package)[0]->vulnId)->toBe('CVE-2030-10')
+        ->and($search->only(['osv', 'nvd'])->search($package))->toHaveCount(2);
+
+    // The original is untouched — only() returns a copy.
+    expect($search->sources())->toHaveCount(2);
+});
+
+it('drops named sources with except()', function () {
+    $search = new VulnSearch([
+        fakeSource('osv', ['x' => [new VulnerabilityData(vulnId: 'CVE-2030-12', source: 'osv')]]),
+        fakeSource('snyk', ['x' => [new VulnerabilityData(vulnId: 'CVE-2030-13', source: 'snyk')]]),
+    ]);
+    $package = new PackageData(name: 'x', version: '1.0', ecosystem: 'npm');
+
+    $results = $search->except('snyk')->search($package);
+    expect($results)->toHaveCount(1)
+        ->and($results[0]->vulnId)->toBe('CVE-2030-12');
+});
+
+it('rejects an unknown source name instead of silently searching fewer feeds', function () {
+    $search = new VulnSearch([fakeSource('osv', [])]);
+
+    expect($search->availableSources())->toBe(['osv']);
+    $search->only('nvdd');
+})->throws(InvalidArgumentException::class, 'Unknown vulnerability source(s): nvdd');

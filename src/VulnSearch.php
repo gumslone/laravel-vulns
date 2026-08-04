@@ -26,6 +26,68 @@ class VulnSearch
     public function __construct(private readonly iterable $sources) {}
 
     /**
+     * A copy restricted to the named sources — the library equivalent of
+     * `--source=nvd,osv`. Names are the sources' own `name()` values
+     * ('osv', 'nvd', 'github', 'cve_search', 'euvd', 'snyk').
+     *
+     * An unknown name throws rather than quietly searching a smaller set:
+     * a typo that silently narrows the search would read as "nothing found".
+     *
+     * @param  string|string[]  $names
+     */
+    public function only(string|array $names): self
+    {
+        $wanted = array_map('strtolower', (array) $names);
+        $known = array_map(fn (Source $s) => $s->name(), $this->all());
+
+        if ($unknown = array_diff($wanted, $known)) {
+            throw new \InvalidArgumentException(sprintf(
+                'Unknown vulnerability source(s): %s. Available: %s.',
+                implode(', ', $unknown),
+                implode(', ', $known),
+            ));
+        }
+
+        return new self(array_values(array_filter(
+            $this->all(),
+            fn (Source $s) => in_array($s->name(), $wanted, true),
+        )));
+    }
+
+    /**
+     * A copy with the named sources removed — e.g. skip a feed that needs
+     * credentials you don't have, or one that is rate-limiting you.
+     *
+     * @param  string|string[]  $names
+     */
+    public function except(string|array $names): self
+    {
+        $unwanted = array_map('strtolower', (array) $names);
+
+        return new self(array_values(array_filter(
+            $this->all(),
+            fn (Source $s) => ! in_array($s->name(), $unwanted, true),
+        )));
+    }
+
+    /**
+     * Names of every registered source, enabled or not — the vocabulary
+     * only()/except() accept.
+     *
+     * @return string[]
+     */
+    public function availableSources(): array
+    {
+        return array_map(fn (Source $s) => $s->name(), $this->all());
+    }
+
+    /** @return Source[] every registered source, enabled or not */
+    private function all(): array
+    {
+        return is_array($this->sources) ? $this->sources : iterator_to_array($this->sources);
+    }
+
+    /**
      * Every vulnerability affecting a package, from all enabled sources.
      *
      * @return VulnerabilityData[]
@@ -117,13 +179,10 @@ class VulnSearch
         return $this->errors;
     }
 
-    /** The enabled sources this instance will query. */
+    /** The enabled sources this instance will actually query. */
     public function sources(): array
     {
-        return array_values(array_filter(
-            is_array($this->sources) ? $this->sources : iterator_to_array($this->sources),
-            fn (Source $s) => $s->isEnabled(),
-        ));
+        return array_values(array_filter($this->all(), fn (Source $s) => $s->isEnabled()));
     }
 
     /**
