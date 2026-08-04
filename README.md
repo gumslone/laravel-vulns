@@ -222,13 +222,58 @@ Every source takes `(?Client $http, array $options, ?LoggerInterface $logger,
 
 ## What you get back
 
-`Gumslone\Vulns\Data\VulnerabilityData` — id + aliases, severity (normalised
-from any string-backed enum), CVSS v2/v3 score and vector, affected ranges,
-fixed versions, references, CWEs, publication stamps and a payload checksum.
+`Gumslone\Vulns\Data\VulnerabilityData` — a normalised record, whatever source
+answered. A real result from `searchPurl('pkg:npm/lodash@4.17.20')`:
 
-`VersionRange::isVulnerable($version, $ranges)` answers whether an installed
-version actually falls inside a finding's ranges — returning `null` when the
-data can't prove it either way, so callers can decide their own fail-safe.
+```php
+$v = $search->searchPurl('pkg:npm/lodash@4.17.20')[0];
+
+$v->vulnId            // "CVE-2019-10744"
+$v->canonicalId()     // "CVE-2019-10744"  — the CVE even when a source keyed it on a GHSA
+$v->source            // "nvd"             — which source won the merge
+$v->severity          // Severity::Critical  (->value === "critical")
+$v->cvssV3Score       // 9.1
+$v->cvssV3Vector      // "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H"
+$v->cvssV2Score       // 6.4
+$v->summary           // "Versions of lodash lower than 4.17.12 are vulnerable to Prototype Pollution…"
+$v->details           // long-form description, when the source has one
+$v->aliases           // ["GHSA-jf85-cpcp-j695", …]  — every other id for the same advisory
+$v->affectedRanges    // [["range" => "< 4.17.12", "source" => "nvd"], …]
+$v->fixedVersions     // ["4.17.12"]      (source-dependent)
+$v->isFixed           // true when a fix is published
+$v->cwes              // ["CWE-1321"]
+$v->references        // [["type" => …, "url" => "https://…"], …]
+$v->affectedEcosystems // ["npm"]         (OSV-style records)
+$v->sourceUrl         // "https://nvd.nist.gov/vuln/detail/CVE-2019-10744"
+$v->sourcePublishedAt // DateTimeInterface|null
+$v->sourceModifiedAt  // DateTimeInterface|null
+$v->rawDataChecksum   // sha256 of the raw payload — cheap change detection
+$v->extra             // source-specific leftovers (e.g. ghsa_id, vuln_status)
+```
+
+Fields a given source doesn't provide are `null` or empty — merging across
+sources is what fills them in, so OSV's ranges and NVD's score end up on the
+same record.
+
+### Does it actually affect my version?
+
+Not every source version-filters: some return advisories for a package *name*.
+`VersionRange` answers the real question, and deliberately distinguishes
+"proven safe" from "can't tell":
+
+```php
+use Gumslone\Vulns\Support\VersionRange;
+
+VersionRange::isVulnerable('4.17.20', $v->affectedRanges);  // true  — inside a range
+VersionRange::isVulnerable('4.17.21', $v->affectedRanges);  // false — provably outside
+VersionRange::isVulnerable('4.17.20', []);                  // null  — no evidence either way
+
+// At or past every published fix, even without ranges:
+VersionRange::isPastAllFixes('5.0.0', $v->fixedVersions);   // true
+```
+
+`null` means undeterminable — decide your own fail-safe (a scanner should
+usually keep the finding and flag it for review rather than silently drop it).
 
 ## Related
 
