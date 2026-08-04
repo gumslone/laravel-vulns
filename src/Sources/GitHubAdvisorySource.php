@@ -159,7 +159,7 @@ class GitHubAdvisorySource extends AbstractSource
                     }
                 },
                 'rejected' => function ($reason, $key) use ($packages) {
-                    $this->log('warning', '[OSSaur] GitHub Advisory query failed', [
+                    $this->log('warning', '[vulns] GitHub Advisory query failed', [
                         'package' => $packages[$key]->name,
                         'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
                     ]);
@@ -180,7 +180,7 @@ class GitHubAdvisorySource extends AbstractSource
             if (! $anyResults) {
                 throw new \RuntimeException('GitHub GraphQL error: '.implode(', ', array_unique($graphqlErrors)));
             }
-            $this->log('warning', '[OSSaur] GitHub Advisory partial failure', ['errors' => array_unique($graphqlErrors)]);
+            $this->log('warning', '[vulns] GitHub Advisory partial failure', ['errors' => array_unique($graphqlErrors)]);
         }
 
         return $results;
@@ -236,7 +236,7 @@ class GitHubAdvisorySource extends AbstractSource
             $response = $this->http->get("/repos/{$package->name}/security-advisories");
             $advisories = json_decode($response->getBody()->getContents(), true) ?? [];
         } catch (GuzzleException $e) {
-            $this->log('warning', '[OSSaur] GitHub repo-advisory query failed', [
+            $this->log('warning', '[vulns] GitHub repo-advisory query failed', [
                 'repo' => $package->name, 'error' => $e->getMessage(),
             ]);
 

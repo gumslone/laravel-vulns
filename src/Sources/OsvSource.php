@@ -49,7 +49,7 @@ class OsvSource extends AbstractSource
 
             return $this->parseVulns($data['vulns'] ?? []);
         } catch (GuzzleException $e) {
-            $this->log('warning', '[OSSaur] OSV query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
+            $this->log('warning', '[vulns] OSV query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
 
             return [];
         }
@@ -83,7 +83,7 @@ class OsvSource extends AbstractSource
                     ]);
                     $data = json_decode($response->getBody()->getContents(), true);
                 } catch (GuzzleException $e) {
-                    $this->log('warning', '[OSSaur] OSV batch query failed', ['error' => $e->getMessage()]);
+                    $this->log('warning', '[vulns] OSV batch query failed', ['error' => $e->getMessage()]);
 
                     break;
                 }
@@ -179,7 +179,7 @@ class OsvSource extends AbstractSource
                 }
             },
             'rejected' => function ($reason, string $id) {
-                $this->log('warning', '[OSSaur] OSV vulnerability hydration failed', [
+                $this->log('warning', '[vulns] OSV vulnerability hydration failed', [
                     'vuln_id' => $id,
                     'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
                 ]);

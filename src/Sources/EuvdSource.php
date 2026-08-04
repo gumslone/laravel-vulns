@@ -67,7 +67,7 @@ class EuvdSource extends AbstractSource
                 }
             },
             'rejected' => function ($reason, $product) {
-                $this->log('warning', '[OSSaur] EUVD query failed', [
+                $this->log('warning', '[vulns] EUVD query failed', [
                     'product' => $product,
                     'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
                 ]);

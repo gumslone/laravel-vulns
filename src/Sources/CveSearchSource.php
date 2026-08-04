@@ -85,7 +85,7 @@ class CveSearchSource extends AbstractSource
                 }
             },
             'rejected' => function ($reason, $path) {
-                $this->log('warning', '[OSSaur] CVE-Search query failed', [
+                $this->log('warning', '[vulns] CVE-Search query failed', [
                     'lookup' => $path,
                     'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
                 ]);

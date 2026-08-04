@@ -81,7 +81,7 @@ class SnykSource extends AbstractSource
                 )));
             },
             'rejected' => function ($reason, $key) use ($packages) {
-                $this->log('warning', '[OSSaur] Snyk query failed', [
+                $this->log('warning', '[vulns] Snyk query failed', [
                     'package' => $packages[$key]->name,
                     'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
                 ]);

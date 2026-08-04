@@ -70,7 +70,7 @@ class NvdSource extends AbstractSource
 
             return $vulns;
         } catch (GuzzleException $e) {
-            $this->log('warning', '[OSSaur] NVD query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
+            $this->log('warning', '[vulns] NVD query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
 
             return [];
         }

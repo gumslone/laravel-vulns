@@ -158,7 +158,8 @@ class PurlBuilder
             [$namespace, $name] = explode('/', $name, 2);
         }
 
-        // OSSaur stores the name as "namespace/name" (composer, npm, golang).
+        // Callers commonly store the name as "namespace/name" (composer,
+        // npm, golang).
         // When the namespace is also supplied on its own, strip the duplicated
         // prefix so the PURL is canonical — pkg:npm/%40babel/core, not the
         // doubled-up pkg:npm/%40babel/%40babel%2Fcore that never matches the
