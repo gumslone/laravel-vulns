@@ -31,7 +31,10 @@ return [
     | back to the priority order). Default 'priority'.
     |
     */
-    'priority' => ['osv', 'github', 'nvd', 'snyk', 'euvd', 'cve_search'],
+    'priority' => [
+        'osv', 'github', 'nvd', 'mitre', 'redhat', 'oss_index',
+        'vulncheck', 'snyk', 'euvd', 'shodan_cvedb', 'cve_search',
+    ],
     'merge' => env('VULNS_MERGE', 'priority'),
 
     /*
@@ -106,5 +109,49 @@ return [
         'org_id' => env('SNYK_ORG_ID'),
         'base_url' => env('VULNS_SNYK_URL', 'https://api.snyk.io'),
         'max_concurrency' => (int) env('VULNS_SNYK_CONCURRENCY', 8),
+    ],
+
+    'oss_index' => [
+        // Sonatype's component-report API is purl-native and batched (128
+        // coordinates per request). Anonymous works; a free account's
+        // username + token raises the rate limits.
+        'enabled' => env('VULNS_OSS_INDEX_ENABLED', true),
+        'base_url' => env('VULNS_OSS_INDEX_URL', 'https://ossindex.sonatype.org/api/v3'),
+        'username' => env('OSS_INDEX_USERNAME'),
+        'api_token' => env('OSS_INDEX_API_TOKEN'),
+        'max_concurrency' => (int) env('VULNS_OSS_INDEX_CONCURRENCY', 4),
+    ],
+
+    'redhat' => [
+        // Red Hat Security Data — free, no key; the only good source for
+        // RPM-ecosystem and container base-image packages.
+        'enabled' => env('VULNS_REDHAT_ENABLED', true),
+        'base_url' => env('VULNS_REDHAT_URL', 'https://access.redhat.com/hydra/rest/securitydata'),
+        'page_size' => (int) env('VULNS_REDHAT_PAGE_SIZE', 1000),
+        'max_concurrency' => (int) env('VULNS_REDHAT_CONCURRENCY', 8),
+    ],
+
+    'shodan_cvedb' => [
+        // Shodan CVEDB — free, no key; carries CVSS + EPSS + KEV per record
+        // and supports product search.
+        'enabled' => env('VULNS_SHODAN_CVEDB_ENABLED', true),
+        'base_url' => env('VULNS_SHODAN_CVEDB_URL', 'https://cvedb.shodan.io'),
+        'page_size' => (int) env('VULNS_SHODAN_CVEDB_PAGE_SIZE', 50),
+        'max_concurrency' => (int) env('VULNS_SHODAN_CVEDB_CONCURRENCY', 8),
+    ],
+
+    'mitre' => [
+        // MITRE CVE Services — the authoritative CVE record, often live
+        // before NVD analysis. fetchById only (no package search).
+        'enabled' => env('VULNS_MITRE_ENABLED', true),
+        'base_url' => env('VULNS_MITRE_URL', 'https://cveawg.mitre.org/api'),
+    ],
+
+    'vulncheck' => [
+        // VulnCheck Community ("NVD++") — requires a free API token;
+        // disabled until one is configured, like Snyk.
+        'enabled' => env('VULNS_VULNCHECK_ENABLED', false),
+        'api_token' => env('VULNCHECK_API_TOKEN'),
+        'base_url' => env('VULNS_VULNCHECK_URL', 'https://api.vulncheck.com/v3'),
     ],
 ];

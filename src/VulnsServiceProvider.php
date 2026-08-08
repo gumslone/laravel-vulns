@@ -34,6 +34,11 @@ class VulnsServiceProvider extends ServiceProvider
         'cve_search' => CveSearchSource::class,
         'euvd' => EuvdSource::class,
         'snyk' => SnykSource::class,
+        'oss_index' => \Gumslone\Vulns\Sources\OssIndexSource::class,
+        'redhat' => \Gumslone\Vulns\Sources\RedHatSource::class,
+        'shodan_cvedb' => \Gumslone\Vulns\Sources\ShodanCvedbSource::class,
+        'mitre' => \Gumslone\Vulns\Sources\MitreCveSource::class,
+        'vulncheck' => \Gumslone\Vulns\Sources\VulnCheckSource::class,
     ];
 
     public function register(): void
@@ -55,7 +60,8 @@ class VulnsServiceProvider extends ServiceProvider
                     $this->optionsFor($key),
                     ...$this->deps(),
                 ),
-                SnykSource::class => new $class(
+                SnykSource::class,
+                \Gumslone\Vulns\Sources\OssIndexSource::class => new $class(
                     $app->make(PurlBuilder::class),
                     null,
                     $this->optionsFor($key),

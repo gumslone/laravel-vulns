@@ -68,7 +68,8 @@ $search->only('nvd')->searchCpe($cpe);              // one source
 $search->only(['osv', 'github'])->searchPurl($purl); // a subset
 $search->except('snyk')->search($package);           // everything but one
 
-$search->availableSources(); // ['osv','github','nvd','cve_search','euvd','snyk']
+$search->availableSources(); // ['osv','github','nvd','cve_search','euvd','snyk',
+                             //  'oss_index','redhat','shodan_cvedb','mitre','vulncheck']
 $search->sources();          // the enabled subset this instance will query
 ```
 
@@ -190,6 +191,11 @@ $one   = $nvd->fetchById('CVE-2021-44228');         // single advisory
 | `GitHubAdvisorySource` | ecosystem + name (registry); **owner/repo** (repository advisories) | `token` for the registry feed | Repository advisories work **without** a token — they cover projects that are in no registry database. |
 | `EuvdSource` | ecosystem + name | — | ENISA EUVD. |
 | `SnykSource` | **purl** | `token` + `org_id` | Disabled unless both are configured. |
+| `OssIndexSource` | **purl** | — (`username`+`api_token` raise limits) | Sonatype's dataset; batched 128 purls per request. Versionless packages are skipped. |
+| `RedHatSource` | name | — | Red Hat Security Data — the source for RPM-ecosystem and container base-image packages. NEVRA strings land in `extra`, not ranges. |
+| `ShodanCvedbSource` | name (product search) | — | One record carries CVSS + EPSS + KEV. |
+| `MitreCveSource` | `fetchById` only | — | Authoritative CVE Record v5 (incl. CNA CVSS v4), often live before NVD analysis. No package search. |
+| `VulnCheckSource` | `fetchById` only | `api_token` | VulnCheck Community "NVD++" — NVD 2.0-shaped records without the NVD lag. Disabled without a token. |
 
 A CPE-driven source given a package without a CPE derives one from the purl or
 name (`CpeResolver`), or from your curated catalog if you bind

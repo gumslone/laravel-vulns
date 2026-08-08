@@ -13,7 +13,8 @@ it('resolves VulnSearch with every source, straight out of the box', function ()
 
     expect($search)->toBeInstanceOf(VulnSearch::class)
         ->and($search->availableSources())
-        ->toBe(['osv', 'github', 'nvd', 'cve_search', 'euvd', 'snyk']);
+        ->toBe(['osv', 'github', 'nvd', 'cve_search', 'euvd', 'snyk',
+            'oss_index', 'redhat', 'shodan_cvedb', 'mitre', 'vulncheck']);
 });
 
 it('feeds config/vulns.php credentials into the sources', function () {

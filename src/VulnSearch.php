@@ -24,7 +24,10 @@ class VulnSearch
      * Curated ecosystem feeds first (they know package-level ranges), the
      * CPE-driven aggregators last (they map coarsest).
      */
-    public const DEFAULT_PRIORITY = ['osv', 'github', 'nvd', 'snyk', 'euvd', 'cve_search'];
+    public const DEFAULT_PRIORITY = [
+        'osv', 'github', 'nvd', 'mitre', 'redhat', 'oss_index',
+        'vulncheck', 'snyk', 'euvd', 'shodan_cvedb', 'cve_search',
+    ];
 
     /** @var array<string, string> source name => error message from the last search */
     private array $errors = [];
@@ -49,7 +52,8 @@ class VulnSearch
     /**
      * A copy restricted to the named sources — the library equivalent of
      * `--source=nvd,osv`. Names are the sources' own `name()` values
-     * ('osv', 'nvd', 'github', 'cve_search', 'euvd', 'snyk').
+     * ('osv', 'nvd', 'github', 'cve_search', 'euvd', 'snyk', 'oss_index',
+     * 'redhat', 'shodan_cvedb', 'mitre', 'vulncheck').
      *
      * An unknown name throws rather than quietly searching a smaller set:
      * a typo that silently narrows the search would read as "nothing found".
