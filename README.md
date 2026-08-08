@@ -2,8 +2,10 @@
 
 [![CI](https://github.com/gumslone/laravel-vulns/actions/workflows/ci.yml/badge.svg)](https://github.com/gumslone/laravel-vulns/actions/workflows/ci.yml)
 
-Multi-source vulnerability lookups for PHP — six production sources behind one
-contract, extracted from and battle-tested in [OSSaur](https://ossaur.com).
+Multi-source vulnerability lookups for PHP — eleven production sources behind
+one contract, with CVSS v2/v3/**v4** scoring, **EPSS** + **CISA KEV** threat
+enrichment and change classification. Extracted from and battle-tested in
+[OSSaur](https://ossaur.com).
 
 | Source | Coverage |
 |---|---|
@@ -13,6 +15,11 @@ contract, extracted from and battle-tested in [OSSaur](https://ossaur.com).
 | `CveSearchSource` | CVE-Search / CIRCL by CPE |
 | `EuvdSource` | ENISA EU Vulnerability Database |
 | `SnykSource` | Snyk REST (token + org) |
+| `OssIndexSource` | Sonatype OSS Index — purl-native, 128-coordinate batches, anonymous or basic-auth |
+| `RedHatSource` | Red Hat Security Data — RPM ecosystem and container base images |
+| `ShodanCvedbSource` | Shodan CVEDB — CVSS + EPSS + KEV in one record, product search |
+| `MitreCveSource` | MITRE CVE Services — authoritative CVE Record v5 by id, often pre-NVD |
+| `VulnCheckSource` | VulnCheck Community "NVD++" by id (free token) |
 
 The core is **framework-free** (plain Guzzle, PSR-3, PSR-16); the Laravel
 service provider is optional sugar.
@@ -211,8 +218,11 @@ No source needs a key to *work*; keys raise limits or unlock a feed:
 | `NVD_API_KEY` | NVD | Still works at 5 req/30s instead of 50 — the source throttles itself either way. |
 | `GITHUB_TOKEN` | GitHub Advisories | **Repository** advisories still work; the registry GraphQL feed is skipped. |
 | `SNYK_API_TOKEN` + `SNYK_ORG_ID` | Snyk | Source stays disabled (it needs both). |
+| `OSS_INDEX_USERNAME` + `OSS_INDEX_API_TOKEN` | OSS Index | Still works anonymously at lower rate limits. |
+| `VULNCHECK_API_TOKEN` | VulnCheck | Source stays disabled. |
 
-OSV, CVE-Search and EUVD need no credentials at all.
+OSV, CVE-Search, EUVD, Red Hat, Shodan CVEDB, MITRE — and the EPSS / KEV
+enrichment feeds — need no credentials at all.
 
 **In Laravel — just set the env vars.** The package's config is merged
 automatically, so `app(VulnSearch::class)` and every `app(…Source::class)` pick
@@ -313,7 +323,13 @@ $v->source            // "nvd"             — which source won the merge
 $v->severity          // Severity::Critical  (->value === "critical")
 $v->cvssV3Score       // 9.1
 $v->cvssV3Vector      // "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H"
-$v->cvssV2Score       // 6.4
+$v->cvssV2Score       // 6.4               (also cvssV2Vector)
+$v->cvssV4Score       // 8.7|null          — v4 computed from the vector when
+$v->cvssV4Vector      //                     the source publishes only CVSS:4.0
+$v->effectiveCvssScore() // 8.7            — newest standard first: v4 → v3 → v2
+$v->epssScore         // 0.9432            — probability of exploitation within
+$v->epssPercentile    // 0.999               30 days (FIRST.org EPSS)
+$v->isKnownExploited  // true              — listed in CISA KEV
 $v->summary           // "Versions of lodash lower than 4.17.12 are vulnerable to Prototype Pollution…"
 $v->details           // long-form description, when the source has one
 $v->aliases           // ["GHSA-jf85-cpcp-j695", …]  — every other id for the same advisory
@@ -332,7 +348,9 @@ $v->extra             // source-specific leftovers (e.g. ghsa_id, vuln_status)
 
 Fields a given source doesn't provide are `null` or empty — merging across
 sources is what fills them in, so OSV's ranges and NVD's score end up on the
-same record.
+same record. EPSS and KEV are stamped after the merge by the threat enricher
+(see above), and `$fresh->changesSince($stored)` classifies what a re-query
+changed — including landing in KEV or crossing the EPSS triage threshold.
 
 ### Does it actually affect my version?
 
