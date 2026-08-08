@@ -41,6 +41,7 @@ class VulnSearch
         private readonly iterable $sources,
         ?array $priority = null,
         private readonly bool $preferLatest = false,
+        private readonly ?\Gumslone\Vulns\Enrichment\ThreatEnricher $enricher = null,
     ) {
         $this->priority = array_values(array_map('strtolower', $priority ?? self::DEFAULT_PRIORITY));
     }
@@ -71,7 +72,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => in_array($s->name(), $wanted, true),
-        )), $this->priority, $this->preferLatest);
+        )), $this->priority, $this->preferLatest, $this->enricher);
     }
 
     /**
@@ -87,7 +88,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => ! in_array($s->name(), $unwanted, true),
-        )), $this->priority, $this->preferLatest);
+        )), $this->priority, $this->preferLatest, $this->enricher);
     }
 
     /**
@@ -100,7 +101,7 @@ class VulnSearch
      */
     public function prioritize(string|array $names): self
     {
-        return new self($this->sources, (array) $names, $this->preferLatest);
+        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher);
     }
 
     /**
@@ -111,7 +112,16 @@ class VulnSearch
      */
     public function preferLatest(bool $prefer = true): self
     {
-        return new self($this->sources, $this->priority, $prefer);
+        return new self($this->sources, $this->priority, $prefer, $this->enricher);
+    }
+
+    /**
+     * A copy with a (different) threat enricher, or null to disable
+     * EPSS / KEV stamping for this instance.
+     */
+    public function withEnricher(?\Gumslone\Vulns\Enrichment\ThreatEnricher $enricher): self
+    {
+        return new self($this->sources, $this->priority, $this->preferLatest, $enricher);
     }
 
     /**
@@ -184,7 +194,31 @@ class VulnSearch
             }
         }
 
-        return array_map($this->merge(...), $results);
+        return $this->enrich(array_map($this->merge(...), $results));
+    }
+
+    /**
+     * Stamp merged results with EPSS / KEV signals. Runs after the merge so
+     * canonical CVE ids are settled; a failing feed leaves results
+     * un-enriched and lands in errors() rather than aborting the search.
+     *
+     * @param  array<array-key, VulnerabilityData[]>  $results
+     * @return array<array-key, VulnerabilityData[]>
+     */
+    private function enrich(array $results): array
+    {
+        if ($this->enricher === null) {
+            return $results;
+        }
+
+        try {
+            $results = $this->enricher->apply($results);
+            $this->errors += $this->enricher->errors();
+        } catch (\Throwable $e) {
+            $this->errors['enrichment'] = $e->getMessage();
+        }
+
+        return $results;
     }
 
     /**
@@ -212,7 +246,7 @@ class VulnSearch
             }
         }
 
-        return $this->merge($found)[0] ?? null;
+        return $this->enrich([$this->merge($found)])[0][0] ?? null;
     }
 
     /**
@@ -284,6 +318,9 @@ class VulnSearch
             cvssV2Vector: $base->cvssV2Vector ?? $other->cvssV2Vector,
             cvssV4Score: $base->cvssV4Score ?? $other->cvssV4Score,
             cvssV4Vector: $base->cvssV4Vector ?? $other->cvssV4Vector,
+            epssScore: $base->epssScore ?? $other->epssScore,
+            epssPercentile: $base->epssPercentile ?? $other->epssPercentile,
+            isKnownExploited: $base->isKnownExploited || $other->isKnownExploited,
             aliases: $aliases,
             affectedEcosystems: $base->affectedEcosystems ?: $other->affectedEcosystems,
             // Version evidence is the scarcest signal — keep whichever has it.

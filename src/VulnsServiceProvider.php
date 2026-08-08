@@ -73,11 +73,18 @@ class VulnsServiceProvider extends ServiceProvider
             ->values()
             ->all());
 
+        $this->app->singleton(\Gumslone\Vulns\Enrichment\ThreatEnricher::class, fn () => new \Gumslone\Vulns\Enrichment\ThreatEnricher(
+            null,
+            ['epss' => (array) config('vulns.epss', []), 'kev' => (array) config('vulns.kev', [])],
+            ...$this->deps(),
+        ));
+
         // The "ask everything" entry point: app(VulnSearch::class).
         $this->app->singleton(VulnSearch::class, fn ($app) => new VulnSearch(
             $app->tagged('vulns.sources'),
             config('vulns.priority'),
             config('vulns.merge', 'priority') === 'latest',
+            $app->make(\Gumslone\Vulns\Enrichment\ThreatEnricher::class),
         ));
     }
 

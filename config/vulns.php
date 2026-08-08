@@ -34,6 +34,28 @@ return [
     'priority' => ['osv', 'github', 'nvd', 'snyk', 'euvd', 'cve_search'],
     'merge' => env('VULNS_MERGE', 'priority'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Threat enrichment
+    |--------------------------------------------------------------------------
+    |
+    | Merged results are stamped with EPSS (FIRST.org's probability of
+    | exploitation in the wild within 30 days — free, no key) and CISA KEV
+    | (confirmed actively exploited). Both key off CVE ids and are cached;
+    | a failing feed leaves results un-enriched and lands in errors().
+    |
+    */
+    'epss' => [
+        'enabled' => env('VULNS_EPSS_ENABLED', true),
+        'base_url' => env('VULNS_EPSS_URL', 'https://api.first.org/data/v1/epss'),
+        'cache_ttl' => (int) env('VULNS_EPSS_CACHE_TTL', 21600),
+    ],
+    'kev' => [
+        'enabled' => env('VULNS_KEV_ENABLED', true),
+        'url' => env('VULNS_KEV_URL', 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'),
+        'cache_ttl' => (int) env('VULNS_KEV_CACHE_TTL', 21600),
+    ],
+
     'osv' => [
         'enabled' => env('VULNS_OSV_ENABLED', true),
         // Requests append 'v1/...' themselves; a legacy '/v1' suffix here is

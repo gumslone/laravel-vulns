@@ -104,6 +104,26 @@ settings survive `only()` / `except()` chaining, and the merged record's
 `sourceModifiedAt` always carries the base's timestamp so you can see how
 fresh the winning data is.
 
+### EPSS and KEV: how likely, and actually exploited?
+
+CVSS says how bad; **EPSS** (FIRST.org) says how *likely* — the probability
+of exploitation in the wild within 30 days — and **CISA KEV** says it *is*
+being exploited. Merged results are stamped with both automatically (keyed
+by canonical CVE id, cached, no API keys needed):
+
+```php
+$vuln->cvssV3Score;        // 9.8  — severity  (also cvssV4Score, cvssV2Score)
+$vuln->effectiveCvssScore(); // newest standard first: v4 → v3 → v2
+$vuln->epssScore;          // 0.94 — probability of exploitation (0..1)
+$vuln->epssPercentile;     // 0.999 — relative to all scored CVEs
+$vuln->isKnownExploited;   // true — listed in CISA KEV
+```
+
+Configure or disable via `vulns.epss` / `vulns.kev` (`VULNS_EPSS_ENABLED`,
+`VULNS_KEV_ENABLED`), or per instance with `$search->withEnricher(null)`.
+A failing feed leaves results un-enriched and lands in `errors()` — a
+missing EPSS score reads as "unknown", never "not exploited".
+
 ### Detecting what changed on a re-query
 
 When you refresh a stored advisory, `changesSince()` classifies the
@@ -115,7 +135,8 @@ $change = $fresh->changesSince($stored);   // VulnChange
 
 $change->impact();      // ChangeImpact::None | Minor | Major
 $change->isMajor();     // score increased OR downgraded, severity shift,
-                        // affected ranges edited, a fix appeared
+                        // affected ranges edited, a fix appeared, listed in
+                        // CISA KEV, or EPSS crossed the 0.1 triage threshold
 $change->changes;       // [ChangeType::ScoreIncreased, ...]
 $change->details;       // ['cvss_v3_score' => [5.0, 8.1], ...]
 $change->summary();     // "score increased (5 → 8.1), description updated"

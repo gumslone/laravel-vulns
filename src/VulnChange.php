@@ -68,6 +68,20 @@ final class VulnChange
             }
         }
 
+        if ($current->isKnownExploited && ! $previous->isKnownExploited) {
+            $changes[] = ChangeType::KnownExploited;
+        }
+
+        if ($current->epssScore !== null && $previous->epssScore !== null
+            && abs($current->epssScore - $previous->epssScore) >= 0.01) {
+            // Crossing the common 0.1 triage threshold upward is major; any
+            // other movement is informational.
+            $changes[] = $current->epssScore >= 0.1 && $previous->epssScore < 0.1
+                ? ChangeType::ExploitationLikely
+                : ChangeType::EpssChanged;
+            $details['epss_score'] = [$previous->epssScore, $current->epssScore];
+        }
+
         if (self::textChanged($previous->summary, $current->summary)
             || self::textChanged($previous->details, $current->details)) {
             $changes[] = ChangeType::DescriptionUpdated;
