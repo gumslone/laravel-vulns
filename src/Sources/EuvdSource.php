@@ -45,36 +45,66 @@ class EuvdSource extends AbstractSource
             $keysByProduct[$package->name][] = $key;
         }
 
-        $requests = function () use ($keysByProduct) {
+        // The API's documented paging surface isn't reflected anywhere in the
+        // shapes we consume, so request the largest page we know is accepted
+        // and flag a full page as possible truncation instead of guessing at
+        // parameters.
+        $pageSize = 100;
+
+        $requests = function () use ($keysByProduct, $pageSize) {
             foreach (array_keys($keysByProduct) as $product) {
                 yield $product => fn () => $this->http->getAsync('search', [
-                    'query' => ['product' => $product, 'size' => 50],
+                    'query' => ['product' => $product, 'size' => $pageSize],
                 ]);
             }
         };
 
+        // Fail safe: a rejected request must not read as "no known
+        // vulnerabilities" for its product — collect rejections during the
+        // pool run and throw once the pool has drained.
+        $failed = 0;
+        $firstReason = null;
+
         $pool = new Pool($this->http, $requests(), [
             'concurrency' => (int) $this->config('max_concurrency', 8),
-            'fulfilled' => function ($response, $product) use (&$results, $keysByProduct) {
+            'fulfilled' => function ($response, $product) use (&$results, $keysByProduct, $pageSize) {
                 $data = json_decode($response->getBody()->getContents(), true) ?? [];
+                $items = $data['items'] ?? [];
+
+                if (count($items) >= $pageSize) {
+                    $this->log('warning', '[vulns] EUVD returned a full page — results may be truncated', [
+                        'product' => $product,
+                        'size' => $pageSize,
+                    ]);
+                }
+
                 $vulns = array_values(array_filter(array_map(
                     [$this, 'parseItem'],
-                    $data['items'] ?? [],
+                    $items,
                 )));
 
                 foreach ($keysByProduct[$product] as $key) {
                     $results[$key] = $vulns;
                 }
             },
-            'rejected' => function ($reason, $product) {
+            'rejected' => function ($reason, $product) use (&$failed, &$firstReason) {
+                $failed++;
+                $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                $firstReason ??= $message;
                 $this->log('warning', '[vulns] EUVD query failed', [
                     'product' => $product,
-                    'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
+                    'error' => $message,
                 ]);
             },
         ]);
 
         $pool->promise()->wait();
+
+        if ($failed > 0) {
+            throw new \RuntimeException(sprintf(
+                'EUVD: %d of %d requests failed: %s', $failed, count($keysByProduct), $firstReason,
+            ));
+        }
 
         return $results;
     }

@@ -61,34 +61,78 @@ class SnykSource extends AbstractSource
             }
         }
 
-        $requests = function () use ($purls) {
-            foreach ($purls as $key => $purl) {
-                yield $key => fn () => $this->http->getAsync(
-                    "/rest/orgs/{$this->orgId}/packages/".rawurlencode($purl).'/issues',
-                    ['query' => ['version' => self::API_VERSION, 'limit' => 100]],
-                );
-            }
-        };
+        // key => request path for the package's next page. Page 1 is built
+        // here; later pages come verbatim from the JSON:API `links.next`.
+        $pending = [];
+        foreach ($purls as $key => $purl) {
+            $pending[$key] = "/rest/orgs/{$this->orgId}/packages/".rawurlencode($purl).'/issues'
+                .'?version='.self::API_VERSION.'&limit=100';
+        }
 
-        $pool = new Pool($this->http, $requests(), [
-            'concurrency' => (int) $this->config('max_concurrency', 8),
-            'fulfilled' => function ($response, $key) use (&$results, $packages) {
-                $data = json_decode($response->getBody()->getContents(), true) ?? [];
+        // Fail safe: a rejected request must not read as "no known
+        // vulnerabilities" for its package — collect rejections during the
+        // pool run and throw once the pool has drained.
+        $failed = 0;
+        $requested = 0;
+        $firstReason = null;
 
-                $results[$key] = array_values(array_filter(array_map(
-                    fn (array $issue) => $this->parseIssue($issue, $packages[$key]),
-                    $data['data'] ?? [],
-                )));
-            },
-            'rejected' => function ($reason, $key) use ($packages) {
-                $this->log('warning', '[vulns] Snyk query failed', [
-                    'package' => $packages[$key]->name,
-                    'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
+        // Hard safety cap on pagination rounds so a livelocked `links.next`
+        // (or an absurdly large result) can't spin forever.
+        $maxPages = (int) $this->config('max_pages', 10);
+
+        for ($round = 0; $pending !== []; $round++) {
+            if ($round >= $maxPages) {
+                $this->log('warning', '[vulns] Snyk pagination cap reached — results truncated', [
+                    'packages' => count($pending),
                 ]);
-            },
-        ]);
 
-        $pool->promise()->wait();
+                break;
+            }
+
+            $next = [];
+            $requested += count($pending);
+
+            $requests = function () use ($pending) {
+                foreach ($pending as $key => $path) {
+                    yield $key => fn () => $this->http->getAsync($path);
+                }
+            };
+
+            $pool = new Pool($this->http, $requests(), [
+                'concurrency' => (int) $this->config('max_concurrency', 8),
+                'fulfilled' => function ($response, $key) use (&$results, &$next, $packages) {
+                    $data = json_decode($response->getBody()->getContents(), true) ?? [];
+
+                    $results[$key] = array_merge($results[$key], array_values(array_filter(array_map(
+                        fn (array $issue) => $this->parseIssue($issue, $packages[$key]),
+                        $data['data'] ?? [],
+                    ))));
+
+                    if (! empty($data['links']['next'])) {
+                        $next[$key] = (string) $data['links']['next'];
+                    }
+                },
+                'rejected' => function ($reason, $key) use ($packages, &$failed, &$firstReason) {
+                    $failed++;
+                    $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                    $firstReason ??= $message;
+                    $this->log('warning', '[vulns] Snyk query failed', [
+                        'package' => $packages[$key]->name,
+                        'error' => $message,
+                    ]);
+                },
+            ]);
+
+            $pool->promise()->wait();
+
+            $pending = $next;
+        }
+
+        if ($failed > 0) {
+            throw new \RuntimeException(sprintf(
+                'Snyk: %d of %d requests failed: %s', $failed, $requested, $firstReason,
+            ));
+        }
 
         return $results;
     }

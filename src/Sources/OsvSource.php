@@ -29,7 +29,19 @@ class OsvSource extends AbstractSource
     public function __construct(?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
-        $this->baseUrl = $this->config('base_url', 'https://api.osv.dev/v1');
+
+        // Requests use relative paths ('v1/query') so a configured base_url
+        // keeps its own path prefix — per RFC 3986 an absolute path like
+        // '/v1/query' REPLACES the base_uri path entirely, which silently
+        // broke every mirror/proxy base_url. Legacy configs baked '/v1' into
+        // the base_url (the old absolute paths made it dead weight); strip it
+        // so those configs keep working now that the paths carry 'v1/'.
+        $base = rtrim((string) $this->config('base_url', 'https://api.osv.dev'), '/');
+        if (str_ends_with($base, '/v1')) {
+            $base = substr($base, 0, -3);
+        }
+        $this->baseUrl = rtrim($base, '/').'/';
+
         $this->http = $http ?? $this->makeClient($this->baseUrl, ['Content-Type' => 'application/json']);
     }
 
@@ -40,19 +52,32 @@ class OsvSource extends AbstractSource
 
     public function queryPackage(PackageData $package): array
     {
-        try {
-            if (! $this->queryable($package)) {
-                return [];
-            }
-            $response = $this->http->post('/v1/query', ['json' => $this->queryPayload($package)]);
-            $data = json_decode($response->getBody()->getContents(), true);
-
-            return $this->parseVulns($data['vulns'] ?? []);
-        } catch (GuzzleException $e) {
-            $this->log('warning', '[vulns] OSV query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
-
+        if (! $this->queryable($package)) {
             return [];
         }
+
+        $payload = $this->queryPayload($package);
+        $vulns = [];
+
+        // The single-query endpoint pages exactly like querybatch: resend the
+        // same query with the returned token until the last page.
+        do {
+            try {
+                $response = $this->http->post('v1/query', ['json' => $payload]);
+                $data = json_decode($response->getBody()->getContents(), true);
+            } catch (GuzzleException $e) {
+                $this->log('warning', '[vulns] OSV query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
+
+                // Fail safe: an unreachable feed must surface as an error the
+                // caller records, not read as "no known vulnerabilities".
+                throw new \RuntimeException("OSV query failed for {$package->name}: {$e->getMessage()}", 0, $e);
+            }
+
+            $vulns = array_merge($vulns, $this->parseVulns($data['vulns'] ?? []));
+            $payload['page_token'] = $data['next_page_token'] ?? null;
+        } while (! empty($payload['page_token']));
+
+        return $vulns;
     }
 
     public function queryBatch(array $packages): array
@@ -78,14 +103,17 @@ class OsvSource extends AbstractSource
                 $keys = array_keys($pending);
 
                 try {
-                    $response = $this->http->post('/v1/querybatch', [
+                    $response = $this->http->post('v1/querybatch', [
                         'json' => ['queries' => array_values($pending)],
                     ]);
                     $data = json_decode($response->getBody()->getContents(), true);
                 } catch (GuzzleException $e) {
                     $this->log('warning', '[vulns] OSV batch query failed', ['error' => $e->getMessage()]);
 
-                    break;
+                    // Fail safe: swallowing this would report every package in
+                    // the batch as clean. Throw so VulnSearch records the
+                    // source in errors() and results read as "under-reported".
+                    throw new \RuntimeException("OSV batch query failed: {$e->getMessage()}", 0, $e);
                 }
 
                 // Results come back in query order
@@ -163,7 +191,7 @@ class OsvSource extends AbstractSource
 
         $requests = function () use ($misses) {
             foreach ($misses as $id) {
-                yield $id => fn () => $this->http->getAsync('/v1/vulns/'.rawurlencode($id));
+                yield $id => fn () => $this->http->getAsync('v1/vulns/'.rawurlencode($id));
             }
         };
 
@@ -193,13 +221,15 @@ class OsvSource extends AbstractSource
 
     private function cacheKey(string $vulnId, string $modified): string
     {
-        return 'ossaur:osv:vuln:'.sha1($vulnId.'|'.$modified);
+        // '.' separators, not ':' — PSR-16 reserves {}()/\@: and strict
+        // implementations (e.g. Symfony's Psr16Cache) throw on them.
+        return 'vulns.osv.vuln.'.sha1($vulnId.'|'.$modified);
     }
 
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
         try {
-            $response = $this->http->get("/v1/vulns/{$vulnId}");
+            $response = $this->http->get('v1/vulns/'.rawurlencode($vulnId));
             $data = json_decode($response->getBody()->getContents(), true);
 
             return $this->parseVuln($data);

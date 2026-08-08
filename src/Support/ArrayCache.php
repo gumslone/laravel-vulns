@@ -29,10 +29,15 @@ class ArrayCache implements CacheInterface
 
     public function set(string $key, mixed $value, null|int|\DateInterval $ttl = null): bool
     {
-        $seconds = $ttl instanceof \DateInterval
-            ? (float) $ttl->days * 86400 + $ttl->h * 3600 + $ttl->i * 60 + $ttl->s
-            : $ttl;
-        $this->items[$key] = ['value' => $value, 'expires' => $seconds !== null ? microtime(true) + $seconds : null];
+        // DateInterval must go through date arithmetic: ->days is false (not
+        // a number) unless the interval came from a DateTime diff, so summing
+        // fields would expire day/month/year TTLs immediately.
+        $expires = match (true) {
+            $ttl instanceof \DateInterval => (float) (new \DateTimeImmutable)->add($ttl)->getTimestamp(),
+            $ttl !== null => microtime(true) + $ttl,
+            default => null,
+        };
+        $this->items[$key] = ['value' => $value, 'expires' => $expires];
 
         return true;
     }

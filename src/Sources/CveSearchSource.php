@@ -68,6 +68,12 @@ class CveSearchSource extends AbstractSource
             }
         };
 
+        // Fail safe: a rejected request must not read as "no known
+        // vulnerabilities" for its packages — collect rejections during the
+        // pool run and throw once the pool has drained.
+        $failed = 0;
+        $firstReason = null;
+
         $pool = new Pool($this->http, $requests(), [
             'concurrency' => (int) $this->config('max_concurrency', 8),
             'fulfilled' => function ($response, $path) use (&$results, $keysByPath, $productByPath) {
@@ -84,15 +90,24 @@ class CveSearchSource extends AbstractSource
                     $results[$key] = $vulns;
                 }
             },
-            'rejected' => function ($reason, $path) {
+            'rejected' => function ($reason, $path) use (&$failed, &$firstReason) {
+                $failed++;
+                $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                $firstReason ??= $message;
                 $this->log('warning', '[vulns] CVE-Search query failed', [
                     'lookup' => $path,
-                    'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
+                    'error' => $message,
                 ]);
             },
         ]);
 
         $pool->promise()->wait();
+
+        if ($failed > 0) {
+            throw new \RuntimeException(sprintf(
+                'CVE-Search: %d of %d requests failed: %s', $failed, count($keysByPath), $firstReason,
+            ));
+        }
 
         return $results;
     }
@@ -100,7 +115,7 @@ class CveSearchSource extends AbstractSource
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
         try {
-            $response = $this->http->get("cve/{$vulnId}");
+            $response = $this->http->get('cve/'.rawurlencode($vulnId));
             $data = json_decode($response->getBody()->getContents(), true);
 
             return $data ? $this->parseCve($data) : null;

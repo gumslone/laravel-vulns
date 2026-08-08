@@ -90,9 +90,14 @@ class PurlBuilder
             $remainder = substr($remainder, 0, $qPos);
         }
 
-        // Extract version
+        // Extract version. Only an '@' AFTER the last '/' separates a
+        // version — an earlier '@' belongs to an unencoded npm scope
+        // ('pkg:npm/@babel/core'), and splitting there would misread the
+        // package name as a version.
         $version = null;
-        if (($atPos = strrpos($remainder, '@')) !== false) {
+        $atPos = strrpos($remainder, '@');
+        $slashPos = strrpos($remainder, '/');
+        if ($atPos !== false && ($slashPos === false || $atPos > $slashPos)) {
             $version = rawurldecode(substr($remainder, $atPos + 1));
             $remainder = substr($remainder, 0, $atPos);
         }

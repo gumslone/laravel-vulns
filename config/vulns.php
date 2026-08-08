@@ -16,9 +16,29 @@ declare(strict_types=1);
 */
 
 return [
+    /*
+    |--------------------------------------------------------------------------
+    | Merge behaviour
+    |--------------------------------------------------------------------------
+    |
+    | When several sources describe the same advisory, `priority` is the trust
+    | order: the earliest-listed source's record becomes the merge base — its
+    | score, severity and summary win, the rest only fill gaps.
+    |
+    | `merge` = 'latest' makes the most recently modified record win instead,
+    | so a CVSS rescore or rewritten description reaches the result no matter
+    | which feed published it first (records without a modification date fall
+    | back to the priority order). Default 'priority'.
+    |
+    */
+    'priority' => ['osv', 'github', 'nvd', 'snyk', 'euvd', 'cve_search'],
+    'merge' => env('VULNS_MERGE', 'priority'),
+
     'osv' => [
         'enabled' => env('VULNS_OSV_ENABLED', true),
-        'base_url' => env('VULNS_OSV_URL', 'https://api.osv.dev/v1'),
+        // Requests append 'v1/...' themselves; a legacy '/v1' suffix here is
+        // tolerated (stripped) for configs written against older releases.
+        'base_url' => env('VULNS_OSV_URL', 'https://api.osv.dev'),
         // Raw advisory payloads are cached by id+modified stamp.
         'cache_ttl' => (int) env('VULNS_OSV_CACHE_TTL', 604800),
         'max_concurrency' => (int) env('VULNS_OSV_CONCURRENCY', 8),

@@ -114,6 +114,13 @@ class GitHubAdvisorySource extends AbstractSource
         // `rejected` handler, so track them and fail loudly at the end.
         $graphqlErrors = [];
 
+        // Fail safe: a transport-level rejection must not read as "no known
+        // vulnerabilities" for its package — collect rejections during the
+        // pool rounds and throw once pagination has drained.
+        $failed = 0;
+        $requested = 0;
+        $firstReason = null;
+
         // Each round fetches one page per pending package concurrently;
         // packages with further pages carry their cursor into the next round.
         while ($pending !== []) {
@@ -158,17 +165,27 @@ class GitHubAdvisorySource extends AbstractSource
                         $next[$key] = $result['pageInfo']['endCursor'];
                     }
                 },
-                'rejected' => function ($reason, $key) use ($packages) {
+                'rejected' => function ($reason, $key) use ($packages, &$failed, &$firstReason) {
+                    $failed++;
+                    $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                    $firstReason ??= $message;
                     $this->log('warning', '[vulns] GitHub Advisory query failed', [
                         'package' => $packages[$key]->name,
-                        'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
+                        'error' => $message,
                     ]);
                 },
             ]);
 
+            $requested += count($pending);
             $pool->promise()->wait();
 
             $pending = $next;
+        }
+
+        if ($failed > 0) {
+            throw new \RuntimeException(sprintf(
+                'GitHub Advisory: %d of %d requests failed: %s', $failed, $requested, $firstReason,
+            ));
         }
 
         // Surface a GraphQL-level failure (rate limit, bad query) so the
@@ -232,15 +249,38 @@ class GitHubAdvisorySource extends AbstractSource
      */
     private function repoAdvisories(PackageData $package): array
     {
+        // Encode owner and repo individually — the '/' between them is a real
+        // path separator, but anything inside a segment must not be able to
+        // rewrite the request path.
+        $path = '/repos/'.implode('/', array_map('rawurlencode', explode('/', $package->name, 2)))
+            .'/security-advisories?per_page=100';
+
+        $advisories = [];
+        // Hard safety cap on Link-header pagination; log when it truncates.
+        $maxPages = (int) $this->config('max_pages', 10);
+
         try {
-            $response = $this->http->get("/repos/{$package->name}/security-advisories");
-            $advisories = json_decode($response->getBody()->getContents(), true) ?? [];
+            for ($page = 0; $path !== null && $page < $maxPages; $page++) {
+                $response = $this->http->get($path);
+                $advisories = array_merge($advisories, json_decode($response->getBody()->getContents(), true) ?? []);
+
+                // RFC 5988 Link header: follow rel="next" until absent.
+                $path = preg_match('/<([^>]+)>;\s*rel="next"/', $response->getHeaderLine('Link'), $m)
+                    ? $m[1]
+                    : null;
+            }
         } catch (GuzzleException $e) {
             $this->log('warning', '[vulns] GitHub repo-advisory query failed', [
                 'repo' => $package->name, 'error' => $e->getMessage(),
             ]);
 
             return [];
+        }
+
+        if ($path !== null) {
+            $this->log('warning', '[vulns] GitHub repo-advisory pagination cap reached — results truncated', [
+                'repo' => $package->name,
+            ]);
         }
 
         $vulns = [];

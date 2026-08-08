@@ -51,29 +51,51 @@ class NvdSource extends AbstractSource
             return [];
         }
 
+        $vulns = [];
+        $startIndex = 0;
+        // Hard safety cap: 10 pages × 2000 default page size covers any real
+        // package; beyond that we log the truncation rather than loop forever.
+        $maxPages = (int) $this->config('max_pages', 10);
+
         try {
-            $this->throttle();
+            for ($page = 0; $page < $maxPages; $page++) {
+                $this->throttle();
 
-            // virtualMatchString matches the CPE with wildcards against configurations
-            $response = $this->http->get('cves/2.0', [
-                'query' => ['virtualMatchString' => $this->matchString($cpe)],
-            ]);
-            $data = json_decode($response->getBody()->getContents(), true);
+                // virtualMatchString matches the CPE with wildcards against configurations
+                $response = $this->http->get('cves/2.0', [
+                    'query' => ['virtualMatchString' => $this->matchString($cpe), 'startIndex' => $startIndex],
+                ]);
+                $data = json_decode($response->getBody()->getContents(), true);
 
-            $vulns = [];
-            foreach ($data['vulnerabilities'] ?? [] as $item) {
-                $vuln = $this->parseCve($item['cve'] ?? []);
-                if ($vuln && $this->versionIsAffected($item['cve'] ?? [], $package)) {
-                    $vulns[] = $vuln;
+                $items = $data['vulnerabilities'] ?? [];
+                foreach ($items as $item) {
+                    $vuln = $this->parseCve($item['cve'] ?? []);
+                    if ($vuln && $this->versionIsAffected($item['cve'] ?? [], $package)) {
+                        $vulns[] = $vuln;
+                    }
+                }
+
+                // NVD 2.0 pages via totalResults/startIndex; an empty page
+                // also ends the walk in case the server miscounts totalResults.
+                $startIndex += count($items);
+                if ($items === [] || $startIndex >= (int) ($data['totalResults'] ?? 0)) {
+                    return $vulns;
                 }
             }
-
-            return $vulns;
         } catch (GuzzleException $e) {
             $this->log('warning', '[vulns] NVD query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
 
-            return [];
+            // Fail safe: an unreachable NVD must surface as an error the
+            // caller records, not read as "no known vulnerabilities".
+            throw new \RuntimeException("NVD query failed for {$package->name}: {$e->getMessage()}", 0, $e);
         }
+
+        $this->log('warning', '[vulns] NVD pagination cap reached — results truncated', [
+            'package' => $package->name,
+            'fetched' => $startIndex,
+        ]);
+
+        return $vulns;
     }
 
     public function queryBatch(array $packages): array
@@ -309,7 +331,9 @@ class NvdSource extends AbstractSource
     {
         $window = (int) $this->config('rate_limit_window', 30);
         $max = (int) $this->config('rate_limit_max', $this->apiKey ? 50 : 5);
-        $key = 'ossaur:nvd:rate:'.intdiv(time(), $window);
+        // '.' separators, not ':' — PSR-16 reserves {}()/\@: and strict
+        // implementations (e.g. Symfony's Psr16Cache) throw on them.
+        $key = 'vulns.nvd.rate.'.intdiv(time(), $window);
 
         // PSR-16 has no atomic increment; a read-modify-write is fine for a
         // best-effort throttle. Falls back to a per-process counter uncached.

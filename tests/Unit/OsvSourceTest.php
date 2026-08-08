@@ -141,19 +141,89 @@ it('derives severity and CVSS score from an OSV CVSS vector string', function ()
         ->and((float) $vuln->cvssV3Score)->toBe(9.8);
 });
 
-it('returns an empty result for every package when the batch request fails', function () {
+it('throws when the batch request fails so the outage is recorded, not read as clean', function () {
     $history = [];
     $source = makeOsvSource([
-        new RequestException('boom', new Request('POST', '/v1/querybatch')),
+        new RequestException('boom', new Request('POST', 'v1/querybatch')),
     ], $history);
 
-    $results = $source->queryBatch([
+    $source->queryBatch([
         new PackageData(name: 'left-pad', version: '1.3.0', ecosystem: 'npm'),
         new PackageData(name: 'lodash', version: '4.17.20', ecosystem: 'npm'),
     ]);
+})->throws(RuntimeException::class, 'OSV batch query failed');
 
-    expect($results)->toBe([[], []]);
-    expect($history)->toHaveCount(1); // no hydration attempted
+it('throws when the single-package query fails so the outage is recorded, not read as clean', function () {
+    $history = [];
+    $source = makeOsvSource([
+        new RequestException('boom', new Request('POST', 'v1/query')),
+    ], $history);
+
+    $source->queryPackage(PackageData::fromArray([
+        'name' => 'curl', 'version' => '7.88.1-10', 'ecosystem' => 'deb',
+        'purl' => 'pkg:deb/debian/curl@7.88.1-10?distro=debian-12',
+    ]));
+})->throws(RuntimeException::class, 'OSV query failed for curl');
+
+it('follows next_page_token on the single-package query path', function () {
+    $history = [];
+    $source = makeOsvSource([
+        new Response(200, [], json_encode([
+            'vulns' => [['id' => 'CVE-2023-1', 'summary' => 'page one', 'aliases' => []]],
+            'next_page_token' => 'TOK',
+        ])),
+        new Response(200, [], json_encode([
+            'vulns' => [['id' => 'CVE-2023-2', 'summary' => 'page two', 'aliases' => []]],
+        ])),
+    ], $history);
+
+    $result = $source->queryPackage(PackageData::fromArray([
+        'name' => 'curl', 'version' => '7.88.1-10', 'ecosystem' => 'deb',
+        'purl' => 'pkg:deb/debian/curl@7.88.1-10?distro=debian-12',
+    ]));
+
+    expect(array_map(fn ($v) => $v->vulnId, $result))->toBe(['CVE-2023-1', 'CVE-2023-2'])
+        ->and($history)->toHaveCount(2);
+
+    $pageTwoBody = json_decode((string) $history[1]['request']->getBody(), true);
+    expect($pageTwoBody['page_token'])->toBe('TOK');
+});
+
+it('resolves requests against a mirrored base_url without losing its path prefix', function () {
+    $history = [];
+    $mock = new MockHandler([new Response(200, [], json_encode(['results' => []]))]);
+    $stack = HandlerStack::create($mock);
+    $stack->push(Middleware::history($history));
+
+    // No injected client: the source must build its own so the configured
+    // base_url actually flows into base_uri (the 'handler' option is a seam).
+    $source = new OsvSource(null, ['base_url' => 'https://mirror.internal/osv', 'handler' => $stack]);
+
+    $source->queryBatch([new PackageData(name: 'lodash', version: '4.17.20', ecosystem: 'npm')]);
+
+    expect((string) $history[0]['request']->getUri())->toBe('https://mirror.internal/osv/v1/querybatch');
+});
+
+it('tolerates a legacy /v1 suffix in the configured base_url', function () {
+    $history = [];
+    $mock = new MockHandler([new Response(200, [], json_encode(['results' => []]))]);
+    $stack = HandlerStack::create($mock);
+    $stack->push(Middleware::history($history));
+
+    $source = new OsvSource(null, ['base_url' => 'https://api.osv.dev/v1', 'handler' => $stack]);
+
+    $source->queryBatch([new PackageData(name: 'lodash', version: '4.17.20', ecosystem: 'npm')]);
+
+    expect((string) $history[0]['request']->getUri())->toBe('https://api.osv.dev/v1/querybatch');
+});
+
+it('percent-encodes the vulnerability id in by-id lookups', function () {
+    $history = [];
+    $source = makeOsvSource([osvVulnResponse('WEIRD-1')], $history);
+
+    $source->fetchById('WEIRD/1?x');
+
+    expect($history[0]['request']->getUri()->getPath())->toBe('v1/vulns/WEIRD%2F1%3Fx');
 });
 
 it('follows querybatch pagination tokens per query', function () {

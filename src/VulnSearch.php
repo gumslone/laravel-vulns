@@ -19,11 +19,31 @@ use Gumslone\Vulns\Data\VulnerabilityData;
  */
 class VulnSearch
 {
+    /**
+     * Default trust order when sources disagree about the same advisory.
+     * Curated ecosystem feeds first (they know package-level ranges), the
+     * CPE-driven aggregators last (they map coarsest).
+     */
+    public const DEFAULT_PRIORITY = ['osv', 'github', 'nvd', 'snyk', 'euvd', 'cve_search'];
+
     /** @var array<string, string> source name => error message from the last search */
     private array $errors = [];
 
-    /** @param iterable<Source> $sources */
-    public function __construct(private readonly iterable $sources) {}
+    /** @var string[] */
+    private readonly array $priority;
+
+    /**
+     * @param  iterable<Source>  $sources
+     * @param  string[]|null  $priority  trust order for merging; null = DEFAULT_PRIORITY
+     * @param  bool  $preferLatest  let the most recently modified record win the merge
+     */
+    public function __construct(
+        private readonly iterable $sources,
+        ?array $priority = null,
+        private readonly bool $preferLatest = false,
+    ) {
+        $this->priority = array_values(array_map('strtolower', $priority ?? self::DEFAULT_PRIORITY));
+    }
 
     /**
      * A copy restricted to the named sources — the library equivalent of
@@ -51,7 +71,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => in_array($s->name(), $wanted, true),
-        )));
+        )), $this->priority, $this->preferLatest);
     }
 
     /**
@@ -67,7 +87,31 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => ! in_array($s->name(), $unwanted, true),
-        )));
+        )), $this->priority, $this->preferLatest);
+    }
+
+    /**
+     * A copy with a different trust order for merging. When several sources
+     * describe the same advisory, the earliest-listed source's record becomes
+     * the merge base — its score, severity, and summary win; the rest only
+     * fill gaps. Sources not listed rank after all listed ones.
+     *
+     * @param  string|string[]  $names
+     */
+    public function prioritize(string|array $names): self
+    {
+        return new self($this->sources, (array) $names, $this->preferLatest);
+    }
+
+    /**
+     * A copy where the most recently modified record wins the merge instead
+     * of the highest-priority source — so a CVSS rescore or rewritten
+     * description reaches the result no matter which feed published it first.
+     * Records without a modification date fall back to priority order.
+     */
+    public function preferLatest(bool $prefer = true): self
+    {
+        return new self($this->sources, $this->priority, $prefer);
     }
 
     /**
@@ -149,6 +193,9 @@ class VulnSearch
      */
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        // errors() reports the most recent operation only — without the reset
+        // a stale failure from an earlier search would taint this lookup.
+        $this->errors = [];
         $found = [];
 
         foreach ($this->sources as $source) {
@@ -211,21 +258,26 @@ class VulnSearch
 
     private function mergePair(VulnerabilityData $a, VulnerabilityData $b): VulnerabilityData
     {
-        // Prefer the record carrying a CVE id as the base, then fill gaps.
-        [$base, $other] = VulnerabilityData::isCveId($a->vulnId) || ! VulnerabilityData::isCveId($b->vulnId)
-            ? [$a, $b]
-            : [$b, $a];
+        [$base, $other] = $this->pickBase($a, $b);
+
+        // The displayed id stays the CVE regardless of which record wins the
+        // merge — canonical ids are how consumers correlate across scans.
+        $vulnId = VulnerabilityData::isCveId($base->vulnId) || ! VulnerabilityData::isCveId($other->vulnId)
+            ? $base->vulnId
+            : $other->vulnId;
 
         $aliases = array_values(array_unique(array_filter(array_merge(
-            $base->aliases, $other->aliases, [$other->vulnId],
-        ), fn (string $id) => $id !== $base->vulnId)));
+            $base->aliases, $other->aliases, [$a->vulnId, $b->vulnId],
+        ), fn (string $id) => $id !== $vulnId)));
 
         return new VulnerabilityData(
-            vulnId: $base->vulnId,
+            vulnId: $vulnId,
             source: $base->source,
             summary: $base->summary ?? $other->summary,
             details: $base->details ?? $other->details,
-            severity: $base->severity->weight() >= $other->severity->weight() ? $base->severity : $other->severity,
+            // The base is authoritative when it has an opinion — taking the
+            // max instead would undo a deliberate downward rescore.
+            severity: $base->severity !== Severity::Unknown ? $base->severity : $other->severity,
             cvssV3Score: $base->cvssV3Score ?? $other->cvssV3Score,
             cvssV3Vector: $base->cvssV3Vector ?? $other->cvssV3Vector,
             cvssV2Score: $base->cvssV2Score ?? $other->cvssV2Score,
@@ -245,5 +297,31 @@ class VulnSearch
             rawDataChecksum: $base->rawDataChecksum,
             extra: $base->extra + $other->extra,
         );
+    }
+
+    /**
+     * Which of two records describing the same advisory wins the merge.
+     * preferLatest: the newer sourceModifiedAt wins (a rescore or rewritten
+     * description reaches the result no matter who published it). Ties and
+     * missing dates fall back to the source trust order.
+     *
+     * @return array{0: VulnerabilityData, 1: VulnerabilityData} [base, other]
+     */
+    private function pickBase(VulnerabilityData $a, VulnerabilityData $b): array
+    {
+        if ($this->preferLatest && $a->sourceModifiedAt !== null && $b->sourceModifiedAt !== null
+            && $a->sourceModifiedAt->getTimestamp() !== $b->sourceModifiedAt->getTimestamp()) {
+            return $a->sourceModifiedAt > $b->sourceModifiedAt ? [$a, $b] : [$b, $a];
+        }
+
+        return $this->rank($a->source) <= $this->rank($b->source) ? [$a, $b] : [$b, $a];
+    }
+
+    /** Position of a source in the trust order; unlisted sources rank last. */
+    private function rank(string $source): int
+    {
+        $rank = array_search(strtolower($source), $this->priority, true);
+
+        return $rank === false ? PHP_INT_MAX : $rank;
     }
 }

@@ -64,7 +64,10 @@ abstract class AbstractSource implements Source
     {
         return new Client($options + [
             'base_uri' => $baseUri,
-            'handler' => RetryHandlerFactory::stack((int) $this->config('retry', $defaultRetry)),
+            // The 'handler' config key is a test seam: injecting a whole
+            // Client would bypass the source's own base_uri handling, which
+            // is exactly what base-URL tests need to exercise.
+            'handler' => $this->config('handler') ?? RetryHandlerFactory::stack((int) $this->config('retry', $defaultRetry)),
             'timeout' => $this->config('timeout', 30),
             'headers' => $headers + [
                 'Accept' => 'application/json',

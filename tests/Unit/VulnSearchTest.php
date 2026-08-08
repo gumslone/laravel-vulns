@@ -4,7 +4,13 @@ use Gumslone\Vulns\Contracts\Source;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity;
+use Gumslone\Vulns\Sources\OsvSource;
 use Gumslone\Vulns\VulnSearch;
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 
 /** A source returning canned results (or throwing) for one package key. */
 function fakeSource(string $name, array $byKey, bool $enabled = true, ?string $throws = null): Source
@@ -84,9 +90,96 @@ it('merges the same advisory across sources, pooling aliases and keeping the ric
     $merged = $results[0];
     expect($merged->vulnId)->toBe('CVE-2030-1')               // CVE wins the id
         ->and($merged->aliases)->toContain('GHSA-aaaa-bbbb-cccc')
-        ->and($merged->cvssV3Score)->toBe(7.5)                // score from NVD
-        ->and($merged->severity)->toBe(Severity::High)        // strongest severity
+        ->and($merged->cvssV3Score)->toBe(7.5)                // gap-filled from NVD
+        ->and($merged->severity)->toBe(Severity::Medium)      // OSV outranks NVD by default
         ->and($merged->affectedRanges)->toBe([['range' => '< 2.0']]); // ranges from OSV
+});
+
+it('lets prioritize() choose which source wins a disagreement', function () {
+    $fromOsv = new VulnerabilityData(
+        vulnId: 'CVE-2030-5', source: 'osv', severity: Severity::Medium,
+        cvssV3Score: 5.0, summary: 'osv wording',
+    );
+    $fromNvd = new VulnerabilityData(
+        vulnId: 'CVE-2030-5', source: 'nvd', severity: Severity::High,
+        cvssV3Score: 8.1, summary: 'nvd wording',
+    );
+    $pkg = new PackageData(name: 'lodash', version: '1.0', ecosystem: 'npm');
+
+    $search = new VulnSearch([
+        fakeSource('osv', ['lodash' => [$fromOsv]]),
+        fakeSource('nvd', ['lodash' => [$fromNvd]]),
+    ]);
+
+    // Default order: OSV outranks NVD.
+    $default = $search->search($pkg)[0];
+    expect($default->cvssV3Score)->toBe(5.0)
+        ->and($default->summary)->toBe('osv wording');
+
+    // Re-ranked: NVD's record becomes the base.
+    $nvdFirst = $search->prioritize(['nvd', 'osv'])->search($pkg)[0];
+    expect($nvdFirst->cvssV3Score)->toBe(8.1)
+        ->and($nvdFirst->severity)->toBe(Severity::High)
+        ->and($nvdFirst->summary)->toBe('nvd wording');
+});
+
+it('lets preferLatest() surface the most recently modified record', function () {
+    // NVD rescored (downward!) a week after OSV's copy was last touched.
+    $stale = new VulnerabilityData(
+        vulnId: 'CVE-2030-6', source: 'osv', severity: Severity::High,
+        cvssV3Score: 8.8, summary: 'old wording',
+        sourceModifiedAt: new DateTimeImmutable('2030-01-01'),
+    );
+    $fresh = new VulnerabilityData(
+        vulnId: 'CVE-2030-6', source: 'nvd', severity: Severity::Medium,
+        cvssV3Score: 5.4, summary: 'rescored wording',
+        sourceModifiedAt: new DateTimeImmutable('2030-01-08'),
+    );
+    $pkg = new PackageData(name: 'lodash', version: '1.0', ecosystem: 'npm');
+
+    $search = new VulnSearch([
+        fakeSource('osv', ['lodash' => [$stale]]),
+        fakeSource('nvd', ['lodash' => [$fresh]]),
+    ]);
+
+    // Priority mode: OSV outranks NVD, the stale copy wins.
+    expect($search->search($pkg)[0]->cvssV3Score)->toBe(8.8);
+
+    // Latest mode: the rescore wins, including the downward severity.
+    $latest = $search->preferLatest()->search($pkg)[0];
+    expect($latest->cvssV3Score)->toBe(5.4)
+        ->and($latest->severity)->toBe(Severity::Medium)
+        ->and($latest->summary)->toBe('rescored wording')
+        ->and($latest->sourceModifiedAt?->format('Y-m-d'))->toBe('2030-01-08');
+});
+
+it('falls back to priority order when modification dates are missing in latest mode', function () {
+    $undated = new VulnerabilityData(vulnId: 'CVE-2030-7', source: 'nvd', cvssV3Score: 9.0);
+    $alsoUndated = new VulnerabilityData(vulnId: 'CVE-2030-7', source: 'osv', cvssV3Score: 4.0);
+    $pkg = new PackageData(name: 'lodash', version: '1.0', ecosystem: 'npm');
+
+    $search = (new VulnSearch([
+        fakeSource('nvd', ['lodash' => [$undated]]),
+        fakeSource('osv', ['lodash' => [$alsoUndated]]),
+    ]))->preferLatest();
+
+    // No dates to compare — OSV still outranks NVD.
+    expect($search->search($pkg)[0]->cvssV3Score)->toBe(4.0);
+});
+
+it('keeps priority and latest settings across only() and except()', function () {
+    $fromOsv = new VulnerabilityData(vulnId: 'CVE-2030-8', source: 'osv', cvssV3Score: 3.0);
+    $fromNvd = new VulnerabilityData(vulnId: 'CVE-2030-8', source: 'nvd', cvssV3Score: 9.0);
+    $pkg = new PackageData(name: 'lodash', version: '1.0', ecosystem: 'npm');
+
+    $search = (new VulnSearch([
+        fakeSource('osv', ['lodash' => [$fromOsv]]),
+        fakeSource('nvd', ['lodash' => [$fromNvd]]),
+        fakeSource('euvd', []),
+    ]))->prioritize(['nvd', 'osv']);
+
+    expect($search->only(['osv', 'nvd'])->search($pkg)[0]->cvssV3Score)->toBe(9.0)
+        ->and($search->except('euvd')->search($pkg)[0]->cvssV3Score)->toBe(9.0);
 });
 
 it('records a failing source instead of aborting the search', function () {
@@ -99,6 +192,41 @@ it('records a failing source instead of aborting the search', function () {
 
     expect($results)->toHaveCount(1)
         ->and($search->errors())->toBe(['flaky' => 'rate limited']);
+});
+
+it('records a real transport failure in errors() while other sources still deliver', function () {
+    // A genuine OsvSource whose HTTP client fails — the source must throw
+    // (not swallow) so searchBatch can record it and results read as
+    // "possibly under-reported" rather than "clean".
+    $osv = new OsvSource(new Client(['handler' => HandlerStack::create(new MockHandler([
+        new RequestException('connection refused', new Request('POST', 'v1/querybatch')),
+    ]))]));
+
+    $search = new VulnSearch([
+        $osv,
+        fakeSource('nvd', ['lodash' => [new VulnerabilityData(vulnId: 'CVE-2030-20', source: 'nvd')]]),
+    ]);
+
+    $results = $search->searchBatch([new PackageData(name: 'lodash', version: '4.17.20', ecosystem: 'npm')]);
+
+    expect(array_map(fn ($v) => $v->vulnId, $results[0]))->toBe(['CVE-2030-20'])
+        ->and($search->errors())->toHaveKey('osv')
+        ->and($search->errors()['osv'])->toContain('connection refused');
+});
+
+it('resets errors from a previous search when fetchById runs', function () {
+    $search = new VulnSearch([
+        fakeSource('flaky', [], throws: 'down'),
+        fakeSource('a', ['x' => [new VulnerabilityData(vulnId: 'CVE-2030-21', source: 'a', summary: 'found')]]),
+    ]);
+
+    $search->search(new PackageData(name: 'x', version: '1.0', ecosystem: 'npm'));
+    expect($search->errors())->toBe(['flaky' => 'down']);
+
+    // fetchById reports its OWN failures only — a stale search error must
+    // not taint a clean lookup.
+    expect($search->fetchById('CVE-2030-21')?->summary)->toBe('found')
+        ->and($search->errors())->toBe([]);
 });
 
 it('skips disabled sources', function () {

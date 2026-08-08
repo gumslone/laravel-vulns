@@ -74,7 +74,11 @@ class VulnsServiceProvider extends ServiceProvider
             ->all());
 
         // The "ask everything" entry point: app(VulnSearch::class).
-        $this->app->singleton(VulnSearch::class, fn ($app) => new VulnSearch($app->tagged('vulns.sources')));
+        $this->app->singleton(VulnSearch::class, fn ($app) => new VulnSearch(
+            $app->tagged('vulns.sources'),
+            config('vulns.priority'),
+            config('vulns.merge', 'priority') === 'latest',
+        ));
     }
 
     public function boot(): void

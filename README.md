@@ -75,6 +75,35 @@ $search->sources();          // the enabled subset this instance will query
 An unknown name throws rather than quietly searching fewer feeds — a typo that
 silently narrowed the search would look exactly like "nothing found".
 
+### When sources disagree: priority and freshness
+
+Several sources usually know the same CVE, with different scores, severities
+and wording. The merge picks one record as the **base** — its fields win, the
+others only fill gaps (ranges, vectors, references are still pooled from all).
+
+By default the base comes from the source **trust order** — `osv → github →
+nvd → snyk → euvd → cve_search`, configurable via `config('vulns.priority')`
+or per call:
+
+```php
+$search->prioritize(['nvd', 'osv'])->search($package); // trust NVD's score first
+```
+
+`preferLatest()` makes the **most recently modified** record win instead, so a
+CVSS rescore or rewritten description reaches the result no matter which feed
+published it first — including downward rescores, which a "keep the highest
+score" merge would silently undo:
+
+```php
+$search->preferLatest()->search($package);
+// or globally: VULNS_MERGE=latest
+```
+
+Records without a modification date fall back to the trust order. Both
+settings survive `only()` / `except()` chaining, and the merged record's
+`sourceModifiedAt` always carries the base's timestamp so you can see how
+fresh the winning data is.
+
 Batching lets sources use their bulk endpoints and request pooling — one call
 for a whole lockfile, results keyed like the input:
 
