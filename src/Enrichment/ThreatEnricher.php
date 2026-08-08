@@ -149,6 +149,16 @@ class ThreatEnricher
                 break;
             }
 
+            // A 200 whose body isn't the expected JSON (an HTML outage page
+            // behind a proxy) is a failed feed, NOT an authoritative "no
+            // scores" — caching misses from it would poison the cache for a
+            // whole TTL.
+            if (! is_array($data) || ! array_key_exists('data', $data)) {
+                $this->logger->warning('[vulns] EPSS returned a malformed body');
+                $this->errors['epss'] = 'malformed response body';
+                break;
+            }
+
             $answered = [];
             foreach ($data['data'] ?? [] as $row) {
                 $cve = strtoupper((string) ($row['cve'] ?? ''));
@@ -199,12 +209,21 @@ class ThreatEnricher
             return [];
         }
 
+        // Same malformed-200 guard as EPSS: an HTML outage page must not be
+        // cached as an empty catalog for a whole TTL.
+        if (! is_array($data) || ! array_key_exists('vulnerabilities', $data)) {
+            $this->logger->warning('[vulns] KEV catalog returned a malformed body');
+            $this->errors['kev'] = 'malformed response body';
+
+            return [];
+        }
+
         $ids = [];
-        foreach ($data['vulnerabilities'] ?? [] as $entry) {
+        foreach ($data['vulnerabilities'] as $entry) {
             if (! empty($entry['cveID'])) {
                 $ids[strtoupper((string) $entry['cveID'])] = [
-                    'added' => $entry['dateAdded'] ?? null,
-                    'due' => $entry['dueDate'] ?? null,
+                    'added' => self::validDate($entry['dateAdded'] ?? null),
+                    'due' => self::validDate($entry['dueDate'] ?? null),
                     'ransomware' => strcasecmp((string) ($entry['knownRansomwareCampaignUse'] ?? ''), 'Known') === 0,
                 ];
             }
@@ -212,5 +231,24 @@ class ThreatEnricher
         $this->cache?->set('vulns.kev.catalog', $ids, $ttl);
 
         return $ids;
+    }
+
+    /**
+     * A parseable date string or null. One malformed date in one catalog row
+     * must degrade that field, not blow up the entire enrichment.
+     */
+    private static function validDate(mixed $value): ?string
+    {
+        if (! is_string($value) || $value === '') {
+            return null;
+        }
+
+        try {
+            new \DateTimeImmutable($value);
+
+            return $value;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

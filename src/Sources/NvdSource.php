@@ -165,8 +165,9 @@ class NvdSource extends AbstractSource
             cvssV4Score: $v4Score,
             cvssV4Vector: $v4Vector,
             isWithdrawn: ($cve['vulnStatus'] ?? '') === 'Rejected',
-            // NVD marks contested records inside the description text.
-            isDisputed: str_contains($description ?? '', 'DISPUTED'),
+            // NVD marks contested records via cveTags since ~2023; older
+            // records embedded a DISPUTED marker in the description text.
+            isDisputed: $this->isDisputed($cve, $description),
             affectedRanges: $this->configurationRanges($cve['configurations'] ?? []),
             references: $references,
             cwes: array_values(array_unique($cwes)),
@@ -274,6 +275,19 @@ class NvdSource extends AbstractSource
         $data = $metrics['cvssMetricV40'][0]['cvssData'] ?? null;
 
         return $data ? [(float) $data['baseScore'], $data['vectorString'] ?? null] : [null, null];
+    }
+
+    private function isDisputed(array $cve, ?string $description): bool
+    {
+        foreach ($cve['cveTags'] ?? [] as $tagGroup) {
+            foreach ((array) ($tagGroup['tags'] ?? []) as $tag) {
+                if (strcasecmp((string) $tag, 'disputed') === 0) {
+                    return true;
+                }
+            }
+        }
+
+        return str_contains($description ?? '', 'DISPUTED');
     }
 
     /**

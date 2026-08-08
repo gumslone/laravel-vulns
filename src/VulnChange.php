@@ -91,6 +91,12 @@ final class VulnChange
                 ? ChangeType::ExploitationLikely
                 : ChangeType::EpssChanged;
             $details['epss_score'] = [$previous->epssScore, $current->epssScore];
+        } elseif ($current->epssScore !== null && $previous->epssScore === null
+            && $current->epssScore >= 0.1) {
+            // The FIRST EPSS score for a stored advisory already above the
+            // threshold fires too — like KEV listing does on first appearance.
+            $changes[] = ChangeType::ExploitationLikely;
+            $details['epss_score'] = [null, $current->epssScore];
         }
 
         if (self::textChanged($previous->summary, $current->summary)

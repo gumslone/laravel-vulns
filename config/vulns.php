@@ -113,8 +113,8 @@ return [
 
     'oss_index' => [
         // Sonatype's component-report API is purl-native and batched (128
-        // coordinates per request). Anonymous works; a free account's
-        // username + token raises the rate limits.
+        // coordinates per request). Requires a free account since 2025 —
+        // the source stays disabled until username + api_token are set.
         'enabled' => env('VULNS_OSS_INDEX_ENABLED', true),
         'base_url' => env('VULNS_OSS_INDEX_URL', 'https://ossindex.sonatype.org/api/v3'),
         'username' => env('OSS_INDEX_USERNAME'),

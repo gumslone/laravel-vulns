@@ -47,6 +47,9 @@ class MitreCveSource extends AbstractSource
 
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        // The CVE Services API 400s (not 404s) on lowercase ids.
+        $vulnId = strtoupper($vulnId);
+
         try {
             $response = $this->http->get('cve/'.rawurlencode($vulnId));
         } catch (BadResponseException $e) {
@@ -83,9 +86,12 @@ class MitreCveSource extends AbstractSource
         // REJECTED records move the prose to rejectedReasons; return them
         // anyway (with state noted in extra) so a stored copy of a since-
         // rejected CVE can be recognised and retired downstream.
-        $summary = collect($cna['descriptions'] ?? [])->firstWhere('lang', 'en')['value']
-            ?? collect($cna['rejectedReasons'] ?? [])->firstWhere('lang', 'en')['value']
-            ?? null;
+        // Large CNAs (Microsoft among them) publish descriptions as en-US,
+        // not en — match any English variant or the record loses its prose.
+        $english = fn (array $rows) => collect($rows)
+            ->first(fn ($d) => stripos((string) ($d['lang'] ?? ''), 'en') === 0)['value'] ?? null;
+        $summary = $english($cna['descriptions'] ?? [])
+            ?? $english($cna['rejectedReasons'] ?? []);
 
         // CNA-supplied metrics first, then ADP enrichment (NVD/CISA attach
         // CVSS in containers.adp when the CNA supplied none) — concat order

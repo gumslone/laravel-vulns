@@ -58,6 +58,9 @@ class VulnCheckSource extends AbstractSource
 
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        // CVE-id-indexed APIs are case-sensitive; normalize like the CVE list.
+        $vulnId = strtoupper($vulnId);
+
         try {
             // The Bearer header rides on the request (not only the default
             // client) so an injected client — the test seam — still sends it.

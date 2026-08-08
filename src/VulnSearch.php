@@ -288,7 +288,9 @@ class VulnSearch
         }
 
         $merged = array_values($byId);
-        usort($merged, fn ($a, $b) => ($b->cvssV3Score ?? -1) <=> ($a->cvssV3Score ?? -1)
+        // effectiveCvssScore (v4 → v3 → v2) so a v4-only-scored Critical
+        // doesn't sort below a v3-scored Low.
+        usort($merged, fn ($a, $b) => ($b->effectiveCvssScore() ?? -1) <=> ($a->effectiveCvssScore() ?? -1)
             ?: $b->severity->weight() <=> $a->severity->weight());
 
         return $merged;

@@ -73,12 +73,13 @@ class OssIndexSource extends AbstractSource
             return $results;
         }
 
-        // The response echoes each coordinate; index case-insensitively
-        // because the server canonicalises purl case (type/namespace) and an
-        // exact-string match would silently drop those reports.
+        // The response echoes each coordinate; index on a normalised form
+        // (lowercase, percent-decoded, qualifiers/subpath stripped) because
+        // the server canonicalises purl case AND encoding — an exact-string
+        // match would silently drop those reports.
         $coordinateAliases = [];
         foreach (array_keys($keysByCoordinate) as $coordinate) {
-            $coordinateAliases[strtolower($coordinate)] = $coordinate;
+            $coordinateAliases[self::normalizeCoordinate($coordinate)] = $coordinate;
         }
 
         $chunks = array_chunk(array_keys($keysByCoordinate), self::MAX_COORDINATES);
@@ -107,7 +108,7 @@ class OssIndexSource extends AbstractSource
                         continue;
                     }
 
-                    $coordinate = $coordinateAliases[strtolower((string) ($report['coordinates'] ?? ''))] ?? null;
+                    $coordinate = $coordinateAliases[self::normalizeCoordinate((string) ($report['coordinates'] ?? ''))] ?? null;
                     $keys = $coordinate !== null ? ($keysByCoordinate[$coordinate] ?? []) : [];
                     if ($keys === []) {
                         continue;
@@ -218,5 +219,28 @@ class OssIndexSource extends AbstractSource
             rawDataChecksum: $this->checksum($vuln),
             extra: ['oss_index_id' => $vuln['id'] ?? null],
         );
+    }
+
+    /**
+     * Sonatype requires authentication since 2025 — anonymous requests 401.
+     * Gate on credentials like Snyk so the default config doesn't record an
+     * oss_index error on every single search.
+     */
+    public function isEnabled(): bool
+    {
+        return parent::isEnabled()
+            && $this->config('username') !== null
+            && $this->config('api_token') !== null;
+    }
+
+    /**
+     * Coordinate comparison form: the server canonicalises case, percent-
+     * encoding, and strips qualifiers — compare what survives all three.
+     */
+    private static function normalizeCoordinate(string $coordinate): string
+    {
+        $bare = preg_split('/[?#]/', $coordinate, 2)[0];
+
+        return strtolower(rawurldecode($bare));
     }
 }

@@ -18,9 +18,9 @@ use GuzzleHttp\Pool;
  *   - GET cve/{CVE-id}                     single record
  *   - GET cves?product={name}&limit=50     product search
  *
- * Records carry flat numeric CVSS scores (cvss_v2 / cvss_v3, plus a generic
- * `cvss` + `cvss_version` pair on older rows) and threat signals CVEDB is
- * uniquely good for: EPSS score, EPSS percentile (`ranked_epss`) and the CISA
+ * Records carry flat numeric CVSS scores (cvss_v2 / cvss_v3 / cvss_v4, plus a
+ * generic `cvss` + `cvss_version` pair on older rows) and threat signals CVEDB
+ * is uniquely good for: EPSS score, EPSS percentile (`ranking_epss`) and the CISA
  * KEV flag. It does NOT expose per-version affects data — only a `cpes` list —
  * so affectedRanges stays empty and the cpes go into extra: emitting
  * pseudo-ranges here would let downstream version-evidence merging wrongly
@@ -147,20 +147,21 @@ class ShodanCvedbSource extends AbstractSource
             return null;
         }
 
+        $v4Score = isset($item['cvss_v4']) ? (float) $item['cvss_v4'] : null;
         $v3Score = isset($item['cvss_v3']) ? (float) $item['cvss_v3'] : null;
         $v2Score = isset($item['cvss_v2']) ? (float) $item['cvss_v2'] : null;
 
         // Older rows only carry a generic `cvss` + `cvss_version` pair; route
         // it into the matching versioned slot rather than dropping the score.
         if (isset($item['cvss'])) {
-            if ((int) ($item['cvss_version'] ?? 3) === 2) {
-                $v2Score ??= (float) $item['cvss'];
-            } else {
-                $v3Score ??= (float) $item['cvss'];
-            }
+            match ((int) ($item['cvss_version'] ?? 3)) {
+                2 => $v2Score ??= (float) $item['cvss'],
+                4 => $v4Score ??= (float) $item['cvss'],
+                default => $v3Score ??= (float) $item['cvss'],
+            };
         }
 
-        $bestScore = $v3Score ?? $v2Score;
+        $bestScore = $v4Score ?? $v3Score ?? $v2Score;
 
         $references = array_values(array_filter(array_map(
             fn ($url) => is_string($url) ? trim($url) : '',
@@ -178,9 +179,14 @@ class ShodanCvedbSource extends AbstractSource
             cvssV3Score: $v3Score,
             cvssV3Vector: $item['cvss_v3_vector'] ?? null,
             cvssV2Score: $v2Score,
+            cvssV4Score: $v4Score,
             epssScore: isset($item['epss']) ? (float) $item['epss'] : null,
-            epssPercentile: isset($item['ranked_epss']) ? (float) $item['ranked_epss'] : null,
+            // The live API spells it `ranking_epss`; `ranked_epss` kept as a
+            // fallback for older cached payloads.
+            epssPercentile: isset($item['ranking_epss']) ? (float) $item['ranking_epss']
+                : (isset($item['ranked_epss']) ? (float) $item['ranked_epss'] : null),
             isKnownExploited: ! empty($item['kev']),
+            usedInRansomware: strcasecmp((string) ($item['ransomware_campaign'] ?? ''), 'Known') === 0,
             references: array_map(fn ($url) => ['type' => null, 'url' => $url], $references),
             sourcePublishedAt: isset($item['published_time']) ? new \DateTime($item['published_time']) : null,
             sourceUrl: "https://cvedb.shodan.io/cve/{$id}",

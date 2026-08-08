@@ -28,10 +28,12 @@ function shodanCvedbRecord(): array
         'cvss_v2' => 7.5,
         'cvss_v3' => 10.0,
         'epss' => 0.97,
-        'ranked_epss' => 0.999,
+        // The live API's spelling — a past bug read the nonexistent
+        // 'ranked_epss' and the fixture masked it.
+        'ranking_epss' => 0.999,
         'kev' => true,
         'propose_action' => 'Upgrade immediately.',
-        'ransomware_campaign' => null,
+        'ransomware_campaign' => 'Known',
         'references' => ['https://nvd.nist.gov/vuln/detail/CVE-2024-3094'],
         'published_time' => '2024-03-29T17:15:00',
         'cpes' => ['cpe:2.3:a:tukaani:xz:5.6.0:*:*:*:*:*:*:*'],
@@ -66,6 +68,7 @@ it('pools one product search per distinct package name and maps threat signals',
         ->and($vuln->cvssV2Score)->toBe(7.5)
         ->and($vuln->epssScore)->toBe(0.97)
         ->and($vuln->epssPercentile)->toBe(0.999)
+        ->and($vuln->usedInRansomware)->toBeTrue()
         ->and($vuln->isKnownExploited)->toBeTrue()
         // CVEDB has no version bounds — cpes stay evidence in extra, never ranges
         ->and($vuln->affectedRanges)->toBe([])

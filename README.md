@@ -15,7 +15,7 @@ enrichment and change classification. Extracted from and battle-tested in
 | `CveSearchSource` | CVE-Search / CIRCL by CPE |
 | `EuvdSource` | ENISA EU Vulnerability Database |
 | `SnykSource` | Snyk REST (token + org) |
-| `OssIndexSource` | Sonatype OSS Index — purl-native, 128-coordinate batches, anonymous or basic-auth |
+| `OssIndexSource` | Sonatype OSS Index — purl-native, 128-coordinate batches (free account required) |
 | `RedHatSource` | Red Hat Security Data — RPM ecosystem and container base images |
 | `ShodanCvedbSource` | Shodan CVEDB — CVSS + EPSS + KEV in one record, product search |
 | `MitreCveSource` | MITRE CVE Services — authoritative CVE Record v5 by id, often pre-NVD |
@@ -90,8 +90,8 @@ and wording. The merge picks one record as the **base** — its fields win, the
 others only fill gaps (ranges, vectors, references are still pooled from all).
 
 By default the base comes from the source **trust order** — `osv → github →
-nvd → snyk → euvd → cve_search`, configurable via `config('vulns.priority')`
-or per call:
+nvd → mitre → redhat → oss_index → vulncheck → snyk → euvd → shodan_cvedb →
+cve_search`, configurable via `config('vulns.priority')` or per call:
 
 ```php
 $search->prioritize(['nvd', 'osv'])->search($package); // trust NVD's score first
@@ -198,7 +198,7 @@ $one   = $nvd->fetchById('CVE-2021-44228');         // single advisory
 | `GitHubAdvisorySource` | ecosystem + name (registry); **owner/repo** (repository advisories) | `token` for the registry feed | Repository advisories work **without** a token — they cover projects that are in no registry database. |
 | `EuvdSource` | ecosystem + name | — | ENISA EUVD. |
 | `SnykSource` | **purl** | `token` + `org_id` | Disabled unless both are configured. |
-| `OssIndexSource` | **purl** | — (`username`+`api_token` raise limits) | Sonatype's dataset; batched 128 purls per request. Versionless packages are skipped. |
+| `OssIndexSource` | **purl** | `username` + `api_token` (free account) | Sonatype's dataset; batched 128 purls per request. Disabled without credentials — anonymous access 401s since 2025. Versionless packages are skipped. |
 | `RedHatSource` | name | — | Red Hat Security Data — the source for RPM-ecosystem and container base-image packages. NEVRA strings land in `extra`, not ranges. |
 | `ShodanCvedbSource` | name (product search) | — | One record carries CVSS + EPSS + KEV. |
 | `MitreCveSource` | `fetchById` only | — | Authoritative CVE Record v5 (incl. CNA CVSS v4), often live before NVD analysis. No package search. |
@@ -218,7 +218,7 @@ No source needs a key to *work*; keys raise limits or unlock a feed:
 | `NVD_API_KEY` | NVD | Still works at 5 req/30s instead of 50 — the source throttles itself either way. |
 | `GITHUB_TOKEN` | GitHub Advisories | **Repository** advisories still work; the registry GraphQL feed is skipped. |
 | `SNYK_API_TOKEN` + `SNYK_ORG_ID` | Snyk | Source stays disabled (it needs both). |
-| `OSS_INDEX_USERNAME` + `OSS_INDEX_API_TOKEN` | OSS Index | Still works anonymously at lower rate limits. |
+| `OSS_INDEX_USERNAME` + `OSS_INDEX_API_TOKEN` | OSS Index | Source stays disabled (it needs both). |
 | `VULNCHECK_API_TOKEN` | VulnCheck | Source stays disabled. |
 
 OSV, CVE-Search, EUVD, Red Hat, Shodan CVEDB, MITRE — and the EPSS / KEV
