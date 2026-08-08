@@ -259,10 +259,15 @@ class OsvSource extends AbstractSource
             return null;
         }
 
+        $cvssV4 = $this->extractCvss($v, '4');
         $cvssV3 = $this->extractCvss($v, '3');
         $cvssV2 = $this->extractCvss($v, '2');
-        $severity = $cvssV3['score'] ? SeverityLevel::fromCvssScore((float) $cvssV3['score'])
-            : ($cvssV2['score'] ? SeverityLevel::fromCvssScore((float) $cvssV2['score']) : SeverityLevel::Unknown);
+        // Newest standard first — a v4-only advisory (increasingly common)
+        // must still yield a severity.
+        $bestScore = $cvssV4['score'] ?? $cvssV3['score'] ?? $cvssV2['score'];
+        $severity = $bestScore !== null
+            ? SeverityLevel::fromCvssScore((float) $bestScore)
+            : SeverityLevel::Unknown;
 
         // OSV CVSS vectors carry no numeric score; GHSA records expose a
         // qualitative severity in database_specific — use it as a fallback.
@@ -304,6 +309,8 @@ class OsvSource extends AbstractSource
             cvssV3Vector: $cvssV3['vector'] ?? null,
             cvssV2Score: $cvssV2['score'] ? (float) $cvssV2['score'] : null,
             cvssV2Vector: $cvssV2['vector'] ?? null,
+            cvssV4Score: $cvssV4['score'] ? (float) $cvssV4['score'] : null,
+            cvssV4Vector: $cvssV4['vector'] ?? null,
             aliases: $v['aliases'] ?? [],
             affectedEcosystems: array_unique($ecosystems),
             affectedRanges: $ranges,

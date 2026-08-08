@@ -31,15 +31,21 @@ final class VulnChange
         $changes = [];
         $details = [];
 
-        $oldScore = $previous->cvssV3Score;
-        $newScore = $current->cvssV3Score;
+        // Compare like with like: v4-to-v4 when both snapshots carry v4,
+        // else v3-to-v3 — never a v4 score against a v3 one, the scales are
+        // calibrated differently.
+        if ($previous->cvssV4Score !== null && $current->cvssV4Score !== null) {
+            [$oldScore, $newScore, $detailKey] = [$previous->cvssV4Score, $current->cvssV4Score, 'cvss_v4_score'];
+        } else {
+            [$oldScore, $newScore, $detailKey] = [$previous->cvssV3Score, $current->cvssV3Score, 'cvss_v3_score'];
+        }
         // A source dropping its score (value → null) is data loss upstream,
         // not a rescore — only value-to-value and first-time scores classify.
         if ($newScore !== null && $newScore !== $oldScore) {
             $changes[] = $oldScore === null || $newScore > $oldScore
                 ? ChangeType::ScoreIncreased
                 : ChangeType::ScoreDecreased;
-            $details['cvss_v3_score'] = [$oldScore, $newScore];
+            $details[$detailKey] = [$oldScore, $newScore];
         }
 
         if ($current->severity !== Severity::Unknown && $current->severity !== $previous->severity) {
@@ -123,10 +129,11 @@ final class VulnChange
         return implode(', ', array_map(function (ChangeType $change): string {
             $label = str_replace('_', ' ', $change->value);
 
+            $score = $this->details['cvss_v4_score'] ?? $this->details['cvss_v3_score'] ?? null;
+
             return match ($change) {
                 ChangeType::ScoreIncreased, ChangeType::ScoreDecreased => sprintf(
-                    '%s (%s → %s)', $label,
-                    $this->details['cvss_v3_score'][0] ?? '—', $this->details['cvss_v3_score'][1] ?? '—',
+                    '%s (%s → %s)', $label, $score[0] ?? '—', $score[1] ?? '—',
                 ),
                 ChangeType::SeverityRaised, ChangeType::SeverityLowered => sprintf(
                     '%s (%s → %s)', $label,

@@ -86,6 +86,12 @@ class CvssCalculator
      */
     public function baseScore(string $vector): ?float
     {
+        // v4.0 vectors use a different scoring system entirely — route them
+        // to the MacroVector calculator so callers can stay version-agnostic.
+        if (str_starts_with(ltrim($vector), 'CVSS:4.0/')) {
+            return Cvss4::baseScore($vector);
+        }
+
         $m = $this->parse($vector);
 
         return $m ? $this->computeBase($m) : null;

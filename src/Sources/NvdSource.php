@@ -133,9 +133,10 @@ class NvdSource extends AbstractSource
 
         [$v3Score, $v3Vector] = $this->extractCvssV3($cve['metrics'] ?? []);
         [$v2Score, $v2Vector] = $this->extractCvssV2($cve['metrics'] ?? []);
+        [$v4Score, $v4Vector] = $this->extractCvssV4($cve['metrics'] ?? []);
 
-        $severity = $v3Score !== null ? SeverityLevel::fromCvssScore($v3Score)
-            : ($v2Score !== null ? SeverityLevel::fromCvssScore($v2Score) : SeverityLevel::Unknown);
+        $bestScore = $v4Score ?? $v3Score ?? $v2Score;
+        $severity = $bestScore !== null ? SeverityLevel::fromCvssScore($bestScore) : SeverityLevel::Unknown;
 
         $cwes = [];
         foreach ($cve['weaknesses'] ?? [] as $weakness) {
@@ -161,6 +162,8 @@ class NvdSource extends AbstractSource
             cvssV3Vector: $v3Vector,
             cvssV2Score: $v2Score,
             cvssV2Vector: $v2Vector,
+            cvssV4Score: $v4Score,
+            cvssV4Vector: $v4Vector,
             affectedRanges: $this->configurationRanges($cve['configurations'] ?? []),
             references: $references,
             cwes: array_values(array_unique($cwes)),
@@ -259,6 +262,13 @@ class NvdSource extends AbstractSource
     private function extractCvssV2(array $metrics): array
     {
         $data = $metrics['cvssMetricV2'][0]['cvssData'] ?? null;
+
+        return $data ? [(float) $data['baseScore'], $data['vectorString'] ?? null] : [null, null];
+    }
+
+    private function extractCvssV4(array $metrics): array
+    {
+        $data = $metrics['cvssMetricV40'][0]['cvssData'] ?? null;
 
         return $data ? [(float) $data['baseScore'], $data['vectorString'] ?? null] : [null, null];
     }

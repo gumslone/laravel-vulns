@@ -141,6 +141,34 @@ it('derives severity and CVSS score from an OSV CVSS vector string', function ()
         ->and((float) $vuln->cvssV3Score)->toBe(9.8);
 });
 
+it('scores a v4-only advisory from its CVSS:4.0 vector', function () {
+    $history = [];
+    $source = makeOsvSource([
+        new Response(200, [], json_encode(['results' => [
+            ['vulns' => [['id' => 'OSV-CVSS4', 'modified' => '2025-01-01T00:00:00Z']]],
+        ]])),
+        // Increasingly common: only a CVSS_V4 severity entry, vector-only.
+        new Response(200, [], json_encode([
+            'id' => 'OSV-CVSS4',
+            'summary' => 'v4-scored bug',
+            'severity' => [
+                ['type' => 'CVSS_V4', 'score' => 'CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N'],
+            ],
+        ])),
+    ], $history);
+
+    $results = $source->queryBatch([
+        new PackageData(name: 'left-pad', version: '1.3.0', ecosystem: 'npm'),
+    ]);
+
+    $vuln = $results[0][0];
+    expect($vuln->cvssV4Score)->toBe(9.3)
+        ->and($vuln->cvssV4Vector)->toContain('CVSS:4.0')
+        ->and($vuln->cvssV3Score)->toBeNull()
+        ->and($vuln->severity)->toBe(Gumslone\Vulns\Severity::Critical)
+        ->and($vuln->effectiveCvssScore())->toBe(9.3);
+});
+
 it('throws when the batch request fails so the outage is recorded, not read as clean', function () {
     $history = [];
     $source = makeOsvSource([

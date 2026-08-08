@@ -282,6 +282,8 @@ class VulnSearch
             cvssV3Vector: $base->cvssV3Vector ?? $other->cvssV3Vector,
             cvssV2Score: $base->cvssV2Score ?? $other->cvssV2Score,
             cvssV2Vector: $base->cvssV2Vector ?? $other->cvssV2Vector,
+            cvssV4Score: $base->cvssV4Score ?? $other->cvssV4Score,
+            cvssV4Vector: $base->cvssV4Vector ?? $other->cvssV4Vector,
             aliases: $aliases,
             affectedEcosystems: $base->affectedEcosystems ?: $other->affectedEcosystems,
             // Version evidence is the scarcest signal — keep whichever has it.
