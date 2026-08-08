@@ -104,6 +104,29 @@ settings survive `only()` / `except()` chaining, and the merged record's
 `sourceModifiedAt` always carries the base's timestamp so you can see how
 fresh the winning data is.
 
+### Detecting what changed on a re-query
+
+When you refresh a stored advisory, `changesSince()` classifies the
+difference so you can route on it — reopen triage on a major change, update
+silently on a minor one:
+
+```php
+$change = $fresh->changesSince($stored);   // VulnChange
+
+$change->impact();      // ChangeImpact::None | Minor | Major
+$change->isMajor();     // score increased OR downgraded, severity shift,
+                        // affected ranges edited, a fix appeared
+$change->changes;       // [ChangeType::ScoreIncreased, ...]
+$change->details;       // ['cvss_v3_score' => [5.0, 8.1], ...]
+$change->summary();     // "score increased (5 → 8.1), description updated"
+```
+
+A description or reference update alone is `Minor`. A downgrade is
+deliberately as major as an upgrade — it can release an SLA-tracked
+assessment, which someone should look at rather than have slip through.
+A source *dropping* its score (value → null) is treated as upstream data
+loss, not a rescore.
+
 Batching lets sources use their bulk endpoints and request pooling — one call
 for a whole lockfile, results keyed like the input:
 
