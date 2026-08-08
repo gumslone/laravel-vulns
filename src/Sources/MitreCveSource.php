@@ -125,6 +125,7 @@ class MitreCveSource extends AbstractSource
             cvssV2Vector: $v2Vector,
             cvssV4Score: $v4Score,
             cvssV4Vector: $v4Vector,
+            isWithdrawn: ($meta['state'] ?? '') === 'REJECTED',
             references: $references,
             cwes: array_values(array_unique($cwes)),
             sourcePublishedAt: isset($meta['datePublished']) ? new \DateTime($meta['datePublished']) : null,

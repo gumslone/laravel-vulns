@@ -164,6 +164,9 @@ class NvdSource extends AbstractSource
             cvssV2Vector: $v2Vector,
             cvssV4Score: $v4Score,
             cvssV4Vector: $v4Vector,
+            isWithdrawn: ($cve['vulnStatus'] ?? '') === 'Rejected',
+            // NVD marks contested records inside the description text.
+            isDisputed: str_contains($description ?? '', 'DISPUTED'),
             affectedRanges: $this->configurationRanges($cve['configurations'] ?? []),
             references: $references,
             cwes: array_values(array_unique($cwes)),

@@ -72,6 +72,17 @@ final class VulnChange
             $changes[] = ChangeType::KnownExploited;
         }
 
+        // Public exploit code appearing (or escalating PoC → weaponized) is
+        // a re-triage trigger for anything previously deferred.
+        if ($current->exploitMaturity()->weight() > $previous->exploitMaturity()->weight()) {
+            $changes[] = ChangeType::ExploitPublished;
+            $details['exploit_maturity'] = [$previous->exploitMaturity()->value, $current->exploitMaturity()->value];
+        }
+
+        if ($current->isWithdrawn && ! $previous->isWithdrawn) {
+            $changes[] = ChangeType::Withdrawn;
+        }
+
         if ($current->epssScore !== null && $previous->epssScore !== null
             && abs($current->epssScore - $previous->epssScore) >= 0.01) {
             // Crossing the common 0.1 triage threshold upward is major; any

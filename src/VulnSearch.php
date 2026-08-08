@@ -325,6 +325,13 @@ class VulnSearch
             epssScore: $base->epssScore ?? $other->epssScore,
             epssPercentile: $base->epssPercentile ?? $other->epssPercentile,
             isKnownExploited: $base->isKnownExploited || $other->isKnownExploited,
+            kevSince: $base->kevSince ?? $other->kevSince,
+            kevDueDate: $base->kevDueDate ?? $other->kevDueDate,
+            usedInRansomware: $base->usedInRansomware || $other->usedInRansomware,
+            // One source retracting is a signal, not a majority vote — the
+            // flag survives the merge either way.
+            isWithdrawn: $base->isWithdrawn || $other->isWithdrawn,
+            isDisputed: $base->isDisputed || $other->isDisputed,
             aliases: $aliases,
             affectedEcosystems: $base->affectedEcosystems ?: $other->affectedEcosystems,
             // Version evidence is the scarcest signal — keep whichever has it.

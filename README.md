@@ -330,6 +330,17 @@ $v->effectiveCvssScore() // 8.7            — newest standard first: v4 → v3 
 $v->epssScore         // 0.9432            — probability of exploitation within
 $v->epssPercentile    // 0.999               30 days (FIRST.org EPSS)
 $v->isKnownExploited  // true              — listed in CISA KEV
+$v->kevSince          // DateTimeInterface — when CISA listed it
+$v->kevDueDate        // DateTimeInterface — US federal remediation deadline
+$v->usedInRansomware  // true              — confirmed ransomware campaign use
+$v->isWithdrawn       // false             — retracted/rejected advisories don't look live
+$v->isDisputed        // false             — contested by the vendor
+$v->exploitMaturity() // ExploitMaturity::Poc — none | poc | weaponized, derived
+$v->exploitReferences() // ["https://www.exploit-db.com/…"] — the exploit links
+$v->attackVector()    // "network" | "adjacent" | "local" | "physical" | null
+$v->isNetworkExploitable()      // true  — for policy gates
+$v->requiresUserInteraction()   // false (null when no v3/v4 vector)
+$v->requiresPrivileges()        // false
 $v->summary           // "Versions of lodash lower than 4.17.12 are vulnerable to Prototype Pollution…"
 $v->details           // long-form description, when the source has one
 $v->aliases           // ["GHSA-jf85-cpcp-j695", …]  — every other id for the same advisory

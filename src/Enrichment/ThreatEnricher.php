@@ -84,12 +84,19 @@ class ThreatEnricher
             fn (array $vulns) => array_map(function (VulnerabilityData $vuln) use ($epss, $kev): VulnerabilityData {
                 $cve = strtoupper($vuln->canonicalId());
                 $scores = $epss[$cve] ?? null;
-                $exploited = isset($kev[$cve]);
-                if ($scores === null && ! $exploited) {
+                $kevEntry = $kev[$cve] ?? null;
+                if ($scores === null && $kevEntry === null) {
                     return $vuln;
                 }
 
-                return $vuln->withThreatSignals($scores['epss'] ?? null, $scores['percentile'] ?? null, $exploited);
+                return $vuln->withThreatSignals(
+                    $scores['epss'] ?? null,
+                    $scores['percentile'] ?? null,
+                    $kevEntry !== null,
+                    kevSince: isset($kevEntry['added']) ? new \DateTimeImmutable($kevEntry['added']) : null,
+                    kevDueDate: isset($kevEntry['due']) ? new \DateTimeImmutable($kevEntry['due']) : null,
+                    usedInRansomware: (bool) ($kevEntry['ransomware'] ?? false),
+                );
             }, $vulns),
             $resultsByPackage,
         );
@@ -163,11 +170,18 @@ class ThreatEnricher
         return $scores;
     }
 
-    /** @return array<string, true> upper-case CVE ids listed in CISA KEV */
+    /**
+     * The KEV catalog keyed by upper-case CVE id, with listing date, the US
+     * federal remediation due date, and confirmed-ransomware use.
+     *
+     * @return array<string, array{added: ?string, due: ?string, ransomware: bool}>
+     */
     private function kevIds(): array
     {
         $ttl = (int) ($this->options['kev']['cache_ttl'] ?? 21600);
-        $cached = $this->cache?->get('vulns.kev.ids');
+        // New cache key ('catalog', not 'ids'): the cached shape changed from
+        // booleans to detail arrays and stale booleans must not be trusted.
+        $cached = $this->cache?->get('vulns.kev.catalog');
         if (is_array($cached)) {
             return $cached;
         }
@@ -188,10 +202,14 @@ class ThreatEnricher
         $ids = [];
         foreach ($data['vulnerabilities'] ?? [] as $entry) {
             if (! empty($entry['cveID'])) {
-                $ids[strtoupper((string) $entry['cveID'])] = true;
+                $ids[strtoupper((string) $entry['cveID'])] = [
+                    'added' => $entry['dateAdded'] ?? null,
+                    'due' => $entry['dueDate'] ?? null,
+                    'ransomware' => strcasecmp((string) ($entry['knownRansomwareCampaignUse'] ?? ''), 'Known') === 0,
+                ];
             }
         }
-        $this->cache?->set('vulns.kev.ids', $ids, $ttl);
+        $this->cache?->set('vulns.kev.catalog', $ids, $ttl);
 
         return $ids;
     }

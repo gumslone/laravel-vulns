@@ -311,6 +311,9 @@ class OsvSource extends AbstractSource
             cvssV2Vector: $cvssV2['vector'] ?? null,
             cvssV4Score: $cvssV4['score'] ? (float) $cvssV4['score'] : null,
             cvssV4Vector: $cvssV4['vector'] ?? null,
+            // OSV stamps retracted advisories with a `withdrawn` timestamp —
+            // a withdrawn record must not look live downstream.
+            isWithdrawn: ! empty($v['withdrawn']),
             aliases: $v['aliases'] ?? [],
             affectedEcosystems: array_unique($ecosystems),
             affectedRanges: $ranges,

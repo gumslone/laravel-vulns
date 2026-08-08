@@ -20,6 +20,8 @@ enum ChangeType: string
     case FixAvailable = 'fix_available';
     case KnownExploited = 'known_exploited';
     case ExploitationLikely = 'exploitation_likely';
+    case ExploitPublished = 'exploit_published';
+    case Withdrawn = 'withdrawn';
     case EpssChanged = 'epss_changed';
     case DescriptionUpdated = 'description_updated';
     case ReferencesUpdated = 'references_updated';
@@ -35,10 +37,13 @@ enum ChangeType: string
             self::SeverityLowered,
             self::RangesChanged,
             self::FixAvailable,
-            // Landing in CISA KEV, or EPSS crossing the 0.1 triage
-            // threshold, changes what "this can wait" means.
+            // Landing in CISA KEV, exploit code appearing, EPSS crossing the
+            // 0.1 triage threshold, or the advisory being retracted all
+            // change what "this can wait" means.
             self::KnownExploited,
-            self::ExploitationLikely => ChangeImpact::Major,
+            self::ExploitationLikely,
+            self::ExploitPublished,
+            self::Withdrawn => ChangeImpact::Major,
             default => ChangeImpact::Minor,
         };
     }

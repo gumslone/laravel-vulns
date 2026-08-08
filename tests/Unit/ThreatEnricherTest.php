@@ -51,6 +51,27 @@ it('stamps EPSS scores and KEV listing onto merged results by canonical CVE id',
         ->and($enricher->errors())->toBe([]);
 });
 
+it('carries KEV listing date, due date and ransomware use through enrichment', function () {
+    $history = [];
+    $enricher = makeEnricher([
+        epssResponse([]),
+        new Response(200, [], json_encode(['vulnerabilities' => [[
+            'cveID' => 'CVE-2030-9',
+            'dateAdded' => '2030-03-01',
+            'dueDate' => '2030-03-22',
+            'knownRansomwareCampaignUse' => 'Known',
+        ]]])),
+    ], $history);
+
+    $vuln = new VulnerabilityData(vulnId: 'CVE-2030-9', source: 'nvd');
+    $enriched = $enricher->apply([[$vuln]])[0][0];
+
+    expect($enriched->isKnownExploited)->toBeTrue()
+        ->and($enriched->kevSince?->format('Y-m-d'))->toBe('2030-03-01')
+        ->and($enriched->kevDueDate?->format('Y-m-d'))->toBe('2030-03-22')
+        ->and($enriched->usedInRansomware)->toBeTrue();
+});
+
 it('leaves results un-enriched and records the failure when a feed is down', function () {
     $history = [];
     $enricher = makeEnricher([
