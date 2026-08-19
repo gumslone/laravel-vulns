@@ -98,7 +98,9 @@ return [
 
     'euvd' => [
         'enabled' => env('VULNS_EUVD_ENABLED', true),
-        'base_url' => env('VULNS_EUVD_URL', 'https://euvd.enisa.europa.eu/api'),
+        // euvdservices — the euvd.enisa.europa.eu domain serves the SPA's
+        // HTML shell on /api/*, not the API.
+        'base_url' => env('VULNS_EUVD_URL', 'https://euvdservices.enisa.europa.eu/api'),
         'max_concurrency' => (int) env('VULNS_EUVD_CONCURRENCY', 8),
     ],
 
