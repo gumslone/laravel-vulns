@@ -229,6 +229,10 @@ PackageData::fromCommit('https://github.com/owner/repo/commit/bf04e5f2')->purl;
 PackageData::fromCommit('https://github.com/owner/repo/commit/bf04e5f2')->toCpe23();
 // "cpe:2.3:a:owner:repo:bf04e5f2:*:*:*:*:*:*:*" (a bare sha converts to null —
 // a hash has no vendor/product identity)
+PackageData::commitFromUrl('https://gitlab.com/g/p/-/commit/bf04e5f2');
+// "bf04e5f2" — the id out of any forge commit link
+PackageData::fromCommit('…/commit/bf04e5f2')->toCommitUrl();
+// back to the forge page (GitLab keeps its /-/ route)
 ```
 
 ## Credentials & configuration

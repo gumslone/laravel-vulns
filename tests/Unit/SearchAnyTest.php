@@ -23,6 +23,24 @@ it('builds a queryable package from a forge commit URL', function () {
     expect(PackageData::fromCommit('https://gitlab.com/group/proj/-/commit/bf04e5f2')->ecosystem)->toBe('gitlab');
 });
 
+it('converts between forge commit links and commit ids in both directions', function () {
+    // link → id
+    expect(PackageData::commitFromUrl('https://github.com/o/r/commit/bf04e5f289885cf2'))->toBe('bf04e5f289885cf2')
+        ->and(PackageData::commitFromUrl('https://gitlab.com/g/p/-/commit/ABCDEF1234567'))->toBe('abcdef1234567')
+        ->and(PackageData::commitFromUrl('bf04e5f2'))->toBe('bf04e5f2')
+        ->and(PackageData::commitFromUrl('https://github.com/o/r/releases'))->toBeNull();
+
+    // id + coordinates → link (GitLab keeps its /-/ route)
+    $gh = PackageData::fromCommit('https://github.com/gumslone/GumCP/commit/bf04e5f289885cf2');
+    expect($gh->toCommitUrl())->toBe('https://github.com/gumslone/gumcp/commit/bf04e5f289885cf2');
+
+    $gl = PackageData::fromCommit('https://gitlab.com/group/proj/-/commit/bf04e5f2');
+    expect($gl->toCommitUrl())->toBe('https://gitlab.com/group/proj/-/commit/bf04e5f2');
+
+    // A bare sha has no repository to link back into.
+    expect(PackageData::fromCommit('bf04e5f2')->toCommitUrl())->toBeNull();
+});
+
 it('accepts a bare commit sha and rejects non-commits', function () {
     $pkg = PackageData::fromCommit('BF04E5F289885CF2');
 

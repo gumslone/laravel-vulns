@@ -68,6 +68,41 @@ final class PackageData
      * query; a URL additionally yields forge coordinates the other sources
      * can use.
      */
+    /**
+     * The bare commit sha out of a forge commit link (GitHub, GitLab incl.
+     * /-/commit/, Bitbucket), or the input itself when it already is a sha.
+     * Null when the string carries no commit id.
+     */
+    public static function commitFromUrl(string $commitOrUrl): ?string
+    {
+        $commitOrUrl = trim($commitOrUrl);
+        if (preg_match('/^[0-9a-f]{7,64}$/i', $commitOrUrl)) {
+            return strtolower($commitOrUrl);
+        }
+        if (preg_match('#/(?:-/)?commits?/([0-9a-f]{7,64})#i', $commitOrUrl)) {
+            return strtolower(preg_replace('#.*/(?:-/)?commits?/([0-9a-f]{7,64}).*#i', '$1', $commitOrUrl));
+        }
+
+        return null;
+    }
+
+    /**
+     * The forge web page for this package's pinned commit — the inverse of
+     * fromCommit(). Null without a commit or forge coordinates. GitLab's
+     * route lives behind its /-/ separator.
+     */
+    public function toCommitUrl(): ?string
+    {
+        if ($this->gitCommitHash === null || $this->repositoryUrl === null) {
+            return null;
+        }
+
+        $repo = rtrim($this->repositoryUrl, '/');
+        $route = str_contains($repo, 'gitlab') ? '/-/commit/' : '/commit/';
+
+        return $repo.$route.$this->gitCommitHash;
+    }
+
     public static function fromCommit(string $commitOrUrl): self
     {
         $commitOrUrl = trim($commitOrUrl);
