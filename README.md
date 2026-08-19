@@ -49,9 +49,17 @@ $vulns = $search->searchCommit('https://github.com/owner/repo/commit/bf04e5f2');
 $vulns = $search->search(new PackageData(name: 'lodash', version: '4.17.20', ecosystem: 'npm'));
 
 // One entry point for anything a user pastes — advisory id, purl, CPE,
-// commit sha or forge commit URL. Unrecognisable input throws.
+// commit sha, or any package URL. Unrecognisable input throws.
 $vulns = $search->searchAny('CVE-2021-44228');
 $vulns = $search->searchAny('cpe:2.3:a:tukaani:xz:5.6.0:*:*:*:*:*:*:*');
+$vulns = $search->searchAny('https://github.com/vrana/adminer/releases/download/v5.5.1/adminer.zip');
+
+// URL search understands commit pages natively; with
+// gumslone/laravel-package-url installed (suggested, not required) it also
+// converts release assets, archive zips (commit archives keep the sha for
+// OSV git-range matching), codeload, GitLab /-/archive/, npm tarballs,
+// PyPI wheels, and every other registry download URL that package speaks.
+$vulns = $search->searchUrl('https://github.com/laravel/framework/archive/bf04e5f2.zip');
 
 foreach ($vulns as $v) {
     printf("%s  %s  %s\n", $v->vulnId, $v->severity->value, $v->cvssV3Score ?? '-');

@@ -1,12 +1,23 @@
 {
     "name": "gumslone/laravel-vulns",
     "description": "Multi-source vulnerability lookups for PHP and Laravel: OSV, NVD, GitHub Advisories (registry + repository), EUVD, CVE-Search and Snyk behind one contract.",
-    "keywords": ["vulnerability", "cve", "osv", "nvd", "sca", "security", "laravel"],
+    "keywords": [
+        "vulnerability",
+        "cve",
+        "osv",
+        "nvd",
+        "sca",
+        "security",
+        "laravel"
+    ],
     "homepage": "https://github.com/gumslone/laravel-vulns",
     "license": "MIT",
     "type": "library",
     "authors": [
-        {"name": "gumslone", "email": "gumslone@i.ua"}
+        {
+            "name": "gumslone",
+            "email": "gumslone@i.ua"
+        }
     ],
     "require": {
         "php": "^8.2",
@@ -17,26 +28,38 @@
     },
     "require-dev": {
         "orchestra/testbench": "^9.0 || ^10.0",
-        "pestphp/pest": "^3.0"
+        "pestphp/pest": "^3.0",
+        "gumslone/laravel-package-url": "^1.2"
     },
     "autoload": {
-        "psr-4": {"Gumslone\\Vulns\\": "src/"}
+        "psr-4": {
+            "Gumslone\\Vulns\\": "src/"
+        }
     },
     "autoload-dev": {
-        "psr-4": {"Gumslone\\Vulns\\Tests\\": "tests/"}
+        "psr-4": {
+            "Gumslone\\Vulns\\Tests\\": "tests/"
+        }
     },
     "extra": {
         "laravel": {
-            "providers": ["Gumslone\\Vulns\\VulnsServiceProvider"]
+            "providers": [
+                "Gumslone\\Vulns\\VulnsServiceProvider"
+            ]
         }
     },
     "config": {
-        "allow-plugins": {"pestphp/pest-plugin": true},
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
         "sort-packages": true
     },
     "scripts": {
         "test": "pest"
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "suggest": {
+        "gumslone/laravel-package-url": "Convert download/release/archive/registry URLs into searchable coordinates (PackageData::fromUrl, VulnSearch::searchUrl)"
+    }
 }

@@ -132,6 +132,41 @@ it('dispatches searchAny() by identifier shape', function () {
         ->and(fn () => $search->searchAny('what even is this'))->toThrow(InvalidArgumentException::class);
 });
 
+it('derives coordinates from download, release and archive URLs via the purl package', function () {
+    // GitHub release asset → tagged purl
+    $release = PackageData::fromUrl('https://github.com/vrana/adminer/releases/download/v5.5.1/adminer-5.5.1.zip');
+    expect($release->purl)->toBe('pkg:github/vrana/adminer@v5.5.1');
+
+    // Commit archive zip → purl AND the commit pin for OSV git-range matching
+    $zip = PackageData::fromUrl('https://github.com/laravel/framework/archive/bf04e5f289885cf2.zip');
+    expect($zip->purl)->toBe('pkg:github/laravel/framework@bf04e5f289885cf2')
+        ->and($zip->gitCommitHash)->toBe('bf04e5f289885cf2');
+
+    // Registry tarballs work too
+    expect(PackageData::fromUrl('https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz')->purl)
+        ->toBe('pkg:npm/lodash@4.17.20')
+        // GitLab archive keeps its /-/ route semantics
+        ->and(PackageData::fromUrl('https://gitlab.com/group/proj/-/archive/v1.2/proj-v1.2.tar.gz')->purl)
+        ->toBe('pkg:gitlab/group/proj@v1.2');
+
+    // A commit URL on an unknown self-hosted forge degrades to a bare-commit query
+    expect(PackageData::fromUrl('https://git.corp.example/o/r/commit/bf04e5f289885cf2')->ecosystem)->toBe('git');
+
+    // Unconvertible URLs throw instead of quietly searching nothing
+    expect(fn () => PackageData::fromUrl('https://example.com/about'))
+        ->toThrow(InvalidArgumentException::class);
+});
+
+it('routes URLs through searchAny()', function () {
+    $search = new VulnSearch([
+        anySearchSource(['vrana/adminer' => [new VulnerabilityData(vulnId: 'CVE-2030-80', source: 'osv')]]),
+    ]);
+
+    $found = $search->searchAny('https://github.com/vrana/adminer/releases/download/v5.5.1/adminer-5.5.1.zip');
+
+    expect(array_map(fn ($v) => $v->vulnId, $found))->toBe(['CVE-2030-80']);
+});
+
 it('uses the precise cpe23 filter on Shodan CVEDB for versioned CPE queries', function () {
     $history = [];
     $stack = HandlerStack::create(new MockHandler([

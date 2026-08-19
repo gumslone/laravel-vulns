@@ -47,12 +47,63 @@ final class PackageData
         $namespace = $parts['namespace'] ?? null;
         $name = $parts['name'];
 
+        $version = $parts['version'] ?? null;
+        $type = $parts['type'];
+
+        // A forge purl whose version is a hex sha is a commit pin (built from
+        // a commit page or a commit archive URL) — carry the commit so OSV
+        // can match it against advisory git ranges.
+        $commit = in_array($type, ['github', 'gitlab', 'bitbucket'], true)
+            && $version !== null && preg_match('/^[0-9a-f]{7,64}$/i', $version)
+            ? strtolower($version)
+            : null;
+
         return new self(
             name: $namespace !== null && $namespace !== '' ? "{$namespace}/{$name}" : $name,
-            version: $parts['version'] ?? null,
-            ecosystem: self::ecosystemForPurlType($parts['type']),
+            version: $version,
+            ecosystem: self::ecosystemForPurlType($type),
             namespace: $namespace,
             purl: $purl,
+            gitCommitHash: $commit,
+        );
+    }
+
+    /**
+     * A queryable package from any package-ish URL — a forge commit page, or
+     * (with gumslone/laravel-package-url installed) a download / release /
+     * archive / registry URL: GitHub release and zip links, GitLab
+     * /-/archive/, codeload, npm tarballs, PyPI wheels, ….
+     */
+    public static function fromUrl(string $url): self
+    {
+        $url = trim($url);
+
+        // The purl package speaks every registry/forge URL dialect — use it
+        // when the host app has it installed (a `suggest`, not a hard
+        // dependency, to keep this core light).
+        if (class_exists(\Gumslone\PackageUrl\Purl::class)) {
+            $purl = (new \Gumslone\PackageUrl\Purl)->fromUrl($url);
+            if ($purl !== null) {
+                return self::fromPurl((string) $purl);
+            }
+        }
+
+        // Native fallback: forge commit pages and bare shas. A commit URL on
+        // an unknown (self-hosted) forge still yields the bare-commit query
+        // OSV can answer.
+        if (($sha = self::commitFromUrl($url)) !== null) {
+            try {
+                return self::fromCommit($url);
+            } catch (\InvalidArgumentException) {
+                return self::fromCommit($sha);
+            }
+        }
+
+        throw new \InvalidArgumentException(
+            "Could not derive package coordinates from '{$url}'."
+            .(class_exists(\Gumslone\PackageUrl\Purl::class)
+                ? ''
+                : ' Install gumslone/laravel-package-url to convert download/release/registry URLs.'),
         );
     }
 

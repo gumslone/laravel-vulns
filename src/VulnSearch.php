@@ -205,13 +205,26 @@ class VulnSearch
         if (str_starts_with($query, 'cpe:2.3:')) {
             return $this->searchCpe($query);
         }
-        if (preg_match('/^[0-9a-f]{7,64}$/i', $query) || preg_match('#^https?://[^\s]+/commits?/#i', $query)) {
+        if (preg_match('/^[0-9a-f]{7,64}$/i', $query)) {
             return $this->searchCommit($query);
+        }
+        if (preg_match('#^https?://#i', $query)) {
+            return $this->searchUrl($query);
         }
 
         throw new \InvalidArgumentException(
-            "Unrecognised query '{$query}'. Pass a CVE/GHSA/EUVD id, a purl (pkg:…), a CPE 2.3, a commit sha, or a forge commit URL.",
+            "Unrecognised query '{$query}'. Pass a CVE/GHSA/EUVD id, a purl (pkg:…), a CPE 2.3, a commit sha, or a package URL.",
         );
+    }
+
+    /**
+     * Search by any package-ish URL — commit pages natively; download,
+     * release, archive and registry URLs when gumslone/laravel-package-url
+     * is installed (see PackageData::fromUrl).
+     */
+    public function searchUrl(string $url): array
+    {
+        return $this->search(PackageData::fromUrl($url));
     }
 
     /**
