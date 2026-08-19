@@ -61,6 +61,86 @@ final class PackageData
      * `cpe:2.3:a:prasathmani:tiny_file_manager:2.6:*:*:*:*:*:*:*`. Only the
      * CPE-driven sources (NVD, CVE-Search) can answer these.
      */
+    /**
+     * A queryable package from a git commit — a bare sha, or a
+     * GitHub/GitLab/Bitbucket commit URL. OSV resolves commits directly
+     * against advisory git ranges, so even a repo-less bare sha is a valid
+     * query; a URL additionally yields forge coordinates the other sources
+     * can use.
+     */
+    public static function fromCommit(string $commitOrUrl): self
+    {
+        $commitOrUrl = trim($commitOrUrl);
+
+        // Forge commit URL: …/<owner>/<repo>/(-/)?commit(s)?/<sha>
+        if (preg_match(
+            '#^https?://(?:www\.)?(github\.com|gitlab\.com|bitbucket\.org)/([^/]+)/([^/]+?)(?:/-)?/commits?/([0-9a-f]{7,64})#i',
+            $commitOrUrl,
+            $m,
+        )) {
+            $type = match (strtolower($m[1])) {
+                'github.com' => 'github',
+                'gitlab.com' => 'gitlab',
+                default => 'bitbucket',
+            };
+            $owner = strtolower($m[2]);
+            $repo = strtolower($m[3]);
+            $sha = strtolower($m[4]);
+
+            return new self(
+                name: $repo,
+                version: $sha,
+                ecosystem: $type,
+                namespace: $owner,
+                purl: "pkg:{$type}/{$owner}/{$repo}@{$sha}",
+                repositoryUrl: "https://{$m[1]}/{$owner}/{$repo}",
+                gitCommitHash: $sha,
+            );
+        }
+
+        if (preg_match('/^[0-9a-f]{7,64}$/i', $commitOrUrl)) {
+            $sha = strtolower($commitOrUrl);
+
+            return new self(
+                name: $sha,
+                version: null,
+                ecosystem: 'git',
+                gitCommitHash: $sha,
+            );
+        }
+
+        throw new \InvalidArgumentException(
+            "Not a git commit: '{$commitOrUrl}'. Pass a 7-64 char hex sha or a forge commit URL.",
+        );
+    }
+
+    /**
+     * The package's purl — the explicit one when set, else built from its
+     * coordinates. Null when there aren't enough coordinates to build one.
+     */
+    public function toPurl(): ?string
+    {
+        if ($this->purl !== null) {
+            return $this->purl;
+        }
+
+        try {
+            return (new \Gumslone\Vulns\Support\PurlBuilder)->fromPackageArray($this->toArray()) ?: null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * The package's CPE 2.3 — the explicit one when set, else derived from
+     * the purl / coordinates (heuristic vendor inference; bind a
+     * Contracts\CpeLookup for curated mappings via the sources instead).
+     */
+    public function toCpe23(): ?string
+    {
+        return $this->cpe23 ?? (new \Gumslone\Vulns\Support\CpeResolver)->resolveCpe23($this);
+    }
+
     public static function fromCpe(string $cpe23): self
     {
         $f = explode(':', $cpe23);

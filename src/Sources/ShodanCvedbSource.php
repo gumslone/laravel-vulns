@@ -45,12 +45,22 @@ class ShodanCvedbSource extends AbstractSource
     {
         $results = array_fill_keys(array_keys($packages), []);
 
-        // Lookup is a product-name search (no version), so packages sharing
-        // a name — e.g. the same dependency at different versions — share
-        // one request.
+        // An explicit CPE with a concrete version uses CVEDB's precise cpe23
+        // filter (it needs part AND version); everything else falls back to
+        // the broader product-name search. Packages sharing a lookup key —
+        // e.g. the same dependency reachable through different manifests —
+        // share one request.
         $keysByProduct = [];
+        $queryByProduct = [];
         foreach ($packages as $key => $package) {
-            $keysByProduct[$package->name][] = $key;
+            if ($package->cpe23 !== null && $package->version !== null) {
+                $lookup = $package->cpe23;
+                $queryByProduct[$lookup] = ['cpe23' => $package->cpe23];
+            } else {
+                $lookup = $package->name;
+                $queryByProduct[$lookup] = ['product' => $package->name];
+            }
+            $keysByProduct[$lookup][] = $key;
         }
 
         // CVEDB caps result lists via `limit`; 50 is what the reference
@@ -58,10 +68,10 @@ class ShodanCvedbSource extends AbstractSource
         // rather than guessing at undocumented paging parameters.
         $limit = (int) $this->config('page_size', 50);
 
-        $requests = function () use ($keysByProduct, $limit) {
+        $requests = function () use ($keysByProduct, $queryByProduct, $limit) {
             foreach (array_keys($keysByProduct) as $product) {
                 yield $product => fn () => $this->http->getAsync('cves', [
-                    'query' => ['product' => $product, 'limit' => $limit],
+                    'query' => $queryByProduct[$product] + ['limit' => $limit],
                 ]);
             }
         };

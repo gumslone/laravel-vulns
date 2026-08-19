@@ -162,12 +162,56 @@ class VulnSearch
     }
 
     /**
-     * Search by CPE 2.3. Only the CPE-driven sources (NVD, CVE-Search) can
-     * answer; the rest return nothing for want of registry coordinates.
+     * Search by CPE 2.3. The CPE-driven sources (NVD, CVE-Search, Shodan
+     * CVEDB's cpe23 filter) use it directly; product-name sources (EUVD,
+     * Red Hat) query the CPE's product, with the CPE's version applied to
+     * their version filtering.
      */
     public function searchCpe(string $cpe23): array
     {
         return $this->search(PackageData::fromCpe($cpe23));
+    }
+
+    /**
+     * Search by git commit — a bare sha or a forge commit URL. OSV resolves
+     * commits directly against advisory git ranges; a URL additionally
+     * yields forge coordinates (pkg:github/…@sha) for the other sources.
+     */
+    public function searchCommit(string $commitOrUrl): array
+    {
+        return $this->search(PackageData::fromCommit($commitOrUrl));
+    }
+
+    /**
+     * One entry point for any identifier a user might paste: an advisory id
+     * (CVE/GHSA/EUVD → the single matching record), a purl, a CPE 2.3, a
+     * git commit sha, or a forge commit URL. Unrecognisable input throws
+     * rather than guessing — a wrong guess would read as "nothing found".
+     *
+     * @return VulnerabilityData[]
+     */
+    public function searchAny(string $query): array
+    {
+        $query = trim($query);
+
+        if (preg_match('/^(CVE-\d{4}-\d+|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}|EUVD-\d{4}-\d+)$/i', $query)) {
+            $found = $this->fetchById(strtoupper($query));
+
+            return $found !== null ? [$found] : [];
+        }
+        if (str_starts_with($query, 'pkg:')) {
+            return $this->searchPurl($query);
+        }
+        if (str_starts_with($query, 'cpe:2.3:')) {
+            return $this->searchCpe($query);
+        }
+        if (preg_match('/^[0-9a-f]{7,64}$/i', $query) || preg_match('#^https?://[^\s]+/commits?/#i', $query)) {
+            return $this->searchCommit($query);
+        }
+
+        throw new \InvalidArgumentException(
+            "Unrecognised query '{$query}'. Pass a CVE/GHSA/EUVD id, a purl (pkg:…), a CPE 2.3, a commit sha, or a forge commit URL.",
+        );
     }
 
     /**

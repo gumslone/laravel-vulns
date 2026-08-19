@@ -45,7 +45,13 @@ $search = app(VulnSearch::class);              // Laravel
 
 $vulns = $search->searchPurl('pkg:npm/lodash@4.17.20');
 $vulns = $search->searchCpe('cpe:2.3:a:prasathmani:tiny_file_manager:2.6:*:*:*:*:*:*:*');
+$vulns = $search->searchCommit('https://github.com/owner/repo/commit/bf04e5f2'); // or a bare sha
 $vulns = $search->search(new PackageData(name: 'lodash', version: '4.17.20', ecosystem: 'npm'));
+
+// One entry point for anything a user pastes — advisory id, purl, CPE,
+// commit sha or forge commit URL. Unrecognisable input throws.
+$vulns = $search->searchAny('CVE-2021-44228');
+$vulns = $search->searchAny('cpe:2.3:a:tukaani:xz:5.6.0:*:*:*:*:*:*:*');
 
 foreach ($vulns as $v) {
     printf("%s  %s  %s\n", $v->vulnId, $v->severity->value, $v->cvssV3Score ?? '-');
@@ -208,6 +214,19 @@ A CPE-driven source given a package without a CPE derives one from the purl or
 name (`CpeResolver`), or from your curated catalog if you bind
 `Contracts\CpeLookup`. Passing `PackageData::fromCpe(...)` — or `cpe23:` on the
 constructor — always wins over both.
+
+Coordinates convert in every direction: build a `PackageData` from a purl, a
+CPE, or a git commit (`fromPurl` / `fromCpe` / `fromCommit` — bare sha or
+forge commit URL), and read the other form back off it:
+
+```php
+PackageData::fromPurl('pkg:composer/laravel/framework@11.0')->toCpe23();
+// "cpe:2.3:a:laravel:framework:11.0:*:*:*:*:*:*:*"
+PackageData::fromCpe('cpe:2.3:a:tukaani:xz:5.6.0:*:*:*:*:*:*:*')->toPurl();
+// "pkg:generic/xz@5.6.0"
+PackageData::fromCommit('https://github.com/owner/repo/commit/bf04e5f2')->purl;
+// "pkg:github/owner/repo@bf04e5f2" — OSV also matches the commit against git ranges
+```
 
 ## Credentials & configuration
 
