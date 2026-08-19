@@ -216,6 +216,14 @@ class EuvdSource extends AbstractSource
                 continue;
             }
 
+            // Old backfilled records carry CVE's "no version given"
+            // placeholders. They are noise, not an unknown constraint —
+            // recording them would block filtering on the real enumerated
+            // versions the same record lists alongside.
+            if (in_array(strtolower($raw), ['n/a', 'na', '-', 'unspecified', 'unknown'], true)) {
+                continue;
+            }
+
             $ranges[] = array_filter([
                 'range' => self::constraintFromText($raw),
                 'raw' => $raw,
@@ -271,6 +279,13 @@ class EuvdSource extends AbstractSource
 
         // A single exact version, possibly behind a module-name prefix.
         if (preg_match("/^(?:.*\s)?({$version})\$/u", $text, $m)) {
+            return "= {$m[1]}";
+        }
+
+        // Old records enumerate hyphen-joined release tags: "openssl-1.1.0a",
+        // "openssl-1.0.2j" — name segments (letter-led) then the version,
+        // which may carry a letter suffix.
+        if (preg_match('/^[A-Za-z][\w.]*(?:-[A-Za-z][\w.]*)*-(\d[0-9A-Za-z.\-+]*)$/u', $text, $m)) {
             return "= {$m[1]}";
         }
 

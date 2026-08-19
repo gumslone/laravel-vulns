@@ -108,6 +108,24 @@ it('maps patch: entries to fixed versions, not affected ranges', function () {
         ->and($vuln->affectedRanges)->toHaveCount(1);
 });
 
+it('handles the old backfilled grammar: n/a placeholders and hyphenated release tags', function () {
+    // Real shape of pre-2018 records: enumerated "openssl-<tag>" entries
+    // (letter-suffixed) plus an "n/a" placeholder alongside.
+    $item = euvdItem('EUVD-2016-1', ['openssl-1.0.2a', 'openssl-1.0.2j', 'openssl-1.1.0a', 'n/a'], 'openssl');
+    $affected = euvdSource([euvdSearch([$item])])->queryBatch([
+        new PackageData(name: 'openssl', version: '1.0.2j', ecosystem: 'generic'),
+    ]);
+    $safe = euvdSource([euvdSearch([$item])])->queryBatch([
+        new PackageData(name: 'openssl', version: '3.0.0', ecosystem: 'generic'),
+    ]);
+
+    // The enumerated tag matches by equality despite the letter suffix…
+    expect($affected[0])->toHaveCount(1)
+        // …and a version outside the enumeration is provably clear: the n/a
+        // placeholder is noise, not an unknown constraint blocking filtering.
+        ->and($safe[0])->toHaveCount(0);
+});
+
 it('treats a 200 with an HTML body as a failed request, not zero vulnerabilities', function () {
     $source = euvdSource([new Response(200, [], '<!doctype html><html>SPA shell</html>')]);
 

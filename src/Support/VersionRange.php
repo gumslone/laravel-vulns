@@ -69,24 +69,35 @@ final class VersionRange
             return null;
         }
 
-        // version_compare misorders anything that isn't a clean dotted-numeric
-        // version — Maven "5.3.0.RELEASE" and Debian epochs "1:1.5" sort BELOW a
-        // bare number, which would make ">= 5.3.0" wrongly fail and clear a
-        // genuinely vulnerable package (a false negative — the dangerous
-        // direction). Only decide when the installed version is safely
-        // comparable; otherwise return null so the caller stays fail-safe.
-        if (! self::isComparable($version)) {
-            return null;
-        }
-
         foreach ($clauses as $clause) {
             if (! preg_match('/^(>=|<=|==|=|>|<)\s*(.+)$/', $clause, $m)) {
                 return null;
             }
 
             $bound = self::normalise($m[2]);
-            if (! self::isComparable($bound)) {
-                return null; // can't trust the comparison against this bound
+
+            // Equality needs no ordering, so letter-suffixed release tags
+            // ("1.1.0a") and other unorderable versions still decide —
+            // EUVD's old records enumerate affected releases exactly this way.
+            if ($m[1] === '=' || $m[1] === '==') {
+                $equal = self::isComparable($version) && self::isComparable($bound)
+                    ? version_compare($version, $bound) === 0
+                    : strcasecmp($version, $bound) === 0;
+                if (! $equal) {
+                    return false; // one clause fails → the AND fails
+                }
+
+                continue;
+            }
+
+            // version_compare misorders anything that isn't a clean
+            // dotted-numeric version — Maven "5.3.0.RELEASE" and Debian epochs
+            // "1:1.5" sort BELOW a bare number, which would make ">= 5.3.0"
+            // wrongly fail and clear a genuinely vulnerable package (a false
+            // negative — the dangerous direction). Only order when both sides
+            // are safely comparable; otherwise stay fail-safe.
+            if (! self::isComparable($version) || ! self::isComparable($bound)) {
+                return null;
             }
 
             $cmp = version_compare($version, $bound);
@@ -95,7 +106,6 @@ final class VersionRange
                 '>' => $cmp > 0,
                 '<=' => $cmp <= 0,
                 '<' => $cmp < 0,
-                '=', '==' => $cmp === 0,
                 default => null,
             };
 
