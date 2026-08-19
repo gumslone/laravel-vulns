@@ -49,6 +49,17 @@ it('converts between purl and CPE in both directions', function () {
         ->and($fromCpe->toCpe23())->toBe('cpe:2.3:a:tukaani:xz:5.6.0:*:*:*:*:*:*:*');
 });
 
+it('converts a commit to a CPE when it carries forge coordinates', function () {
+    // owner → vendor, repo → product, sha → version
+    $url = PackageData::fromCommit('https://github.com/gumslone/GumCP/commit/bf04e5f289885cf2f20a92b387bcc6df33e30809');
+    expect($url->toCpe23())
+        ->toBe('cpe:2.3:a:gumslone:gumcp:bf04e5f289885cf2f20a92b387bcc6df33e30809:*:*:*:*:*:*:*');
+
+    // A bare sha has no vendor/product identity — null, never a
+    // hash-as-vendor CPE that matches nothing.
+    expect(PackageData::fromCommit('bf04e5f289885cf2')->toCpe23())->toBeNull();
+});
+
 /** A by-name source stub: results keyed on PackageData->name or vuln id. */
 function anySearchSource(array $byName): \Gumslone\Vulns\Contracts\Source
 {

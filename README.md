@@ -226,6 +226,9 @@ PackageData::fromCpe('cpe:2.3:a:tukaani:xz:5.6.0:*:*:*:*:*:*:*')->toPurl();
 // "pkg:generic/xz@5.6.0"
 PackageData::fromCommit('https://github.com/owner/repo/commit/bf04e5f2')->purl;
 // "pkg:github/owner/repo@bf04e5f2" — OSV also matches the commit against git ranges
+PackageData::fromCommit('https://github.com/owner/repo/commit/bf04e5f2')->toCpe23();
+// "cpe:2.3:a:owner:repo:bf04e5f2:*:*:*:*:*:*:*" (a bare sha converts to null —
+// a hash has no vendor/product identity)
 ```
 
 ## Credentials & configuration

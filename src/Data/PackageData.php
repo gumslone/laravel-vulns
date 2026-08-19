@@ -135,10 +135,22 @@ final class PackageData
      * The package's CPE 2.3 — the explicit one when set, else derived from
      * the purl / coordinates (heuristic vendor inference; bind a
      * Contracts\CpeLookup for curated mappings via the sources instead).
+     *
+     * A commit-URL package converts (owner → vendor, repo → product,
+     * sha → version); a BARE commit sha has no vendor/product identity, so
+     * it returns null rather than a hash-as-vendor CPE that matches nothing.
      */
     public function toCpe23(): ?string
     {
-        return $this->cpe23 ?? (new \Gumslone\Vulns\Support\CpeResolver)->resolveCpe23($this);
+        if ($this->cpe23 !== null) {
+            return $this->cpe23;
+        }
+
+        if ($this->ecosystem === 'git' && preg_match('/^[0-9a-f]{7,64}$/', $this->name)) {
+            return null;
+        }
+
+        return (new \Gumslone\Vulns\Support\CpeResolver)->resolveCpe23($this);
     }
 
     public static function fromCpe(string $cpe23): self
