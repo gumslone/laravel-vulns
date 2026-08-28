@@ -96,6 +96,25 @@ it('keeps everything for a versionless package', function () {
     expect($results[0])->toHaveCount(1);
 });
 
+it('keeps multi-product patch entries out of fixedVersions — the fix claim would be ambiguous', function () {
+    $item = [
+        'id' => 'EUVD-2030-50',
+        'description' => 'Multi-product advisory with a patch for only one of them.',
+        'aliases' => 'CVE-2030-50',
+        'enisaIdProduct' => [
+            ['product' => ['name' => 'jenkins'], 'product_version' => '0 ≤2.575'],
+            ['product' => ['name' => 'some-plugin'], 'product_version' => 'patch: 99.0'],
+        ],
+    ];
+    $vuln = euvdSource([euvdSearch([$item])])->queryBatch([
+        new PackageData(name: 'jenkins', version: '2.500', ecosystem: 'generic'),
+    ])[0][0];
+
+    // The foreign patch must not feed isPastAllFixes for jenkins.
+    expect($vuln->fixedVersions)->toBe([])
+        ->and($vuln->isFixed)->toBeFalse();
+});
+
 it('maps patch: entries to fixed versions, not affected ranges', function () {
     $source = euvdSource([euvdSearch([euvdItem('EUVD-2030-40', ['patch: 2.576', '0 ≤2.575'], 'jenkins')])]);
 

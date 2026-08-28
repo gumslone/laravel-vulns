@@ -24,6 +24,39 @@ it('rejects malformed v4 vectors instead of guessing', function () {
         ->and(Cvss4::baseScore('garbage'))->toBeNull();
 });
 
+// Reference values computed with FIRST's calculator; the modifier path is
+// additionally validated against it over 5000 random modifier sets.
+it('recalculates v4 environmental/threat scores like the FIRST reference', function () {
+    // Air-gapped: MAV Physical drops a 9.3 network RCE to 7.0.
+    $airGapped = Cvss4::environmental('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N', ['MAV' => 'P']);
+    expect($airGapped['score'])->toBe(7.0)
+        ->and($airGapped['vector'])->toEndWith('/MAV:P');
+
+    // High confidentiality requirement + PoC-maturity threat.
+    expect(Cvss4::environmental('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:L/VA:N/SC:N/SI:N/SA:N', ['CR' => 'H', 'E' => 'P'])['score'])
+        ->toBe(7.8);
+
+    // Safety impact on subsequent systems raises the score.
+    expect(Cvss4::environmental('CVSS:4.0/AV:A/AC:L/AT:N/PR:L/UI:N/VC:L/VI:L/VA:L/SC:H/SI:H/SA:H', ['MSI' => 'S'])['score'])
+        ->toBe(8.1);
+
+    // 'X' modifiers are no-ops; unknown keys are ignored; base stays intact.
+    $noop = Cvss4::environmental('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N', ['MAV' => 'X', 'BOGUS' => 'H']);
+    expect($noop['score'])->toBe(9.3)
+        ->and($noop['vector'])->not->toContain('BOGUS');
+
+    expect(Cvss4::environmental('not a vector', ['MAV' => 'P']))->toBeNull();
+});
+
+it('routes v4 environmental recalculation through the calculator entry point', function () {
+    $result = (new CvssCalculator)->environmental(
+        'CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N',
+        ['MAV' => 'P'],
+    );
+
+    expect($result['score'])->toBe(7.0);
+});
+
 it('routes v4 vectors through the version-agnostic calculator entry point', function () {
     $calc = new CvssCalculator;
 

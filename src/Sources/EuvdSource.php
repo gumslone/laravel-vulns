@@ -202,6 +202,15 @@ class EuvdSource extends AbstractSource
         $ranges = [];
         $fixed = [];
 
+        // fixedVersions carries no product dimension, so a patch entry is
+        // only unambiguous when the advisory concerns a single product —
+        // in a multi-product advisory another product's patch would wrongly
+        // feed isPastAllFixes for ours.
+        $products = collect($item['enisaIdProduct'] ?? [])
+            ->map(fn ($e) => strtolower(trim((string) ($e['product']['name'] ?? ''))))
+            ->filter()->unique();
+        $singleProduct = $products->count() <= 1;
+
         foreach ($item['enisaIdProduct'] ?? [] as $entry) {
             $product = trim((string) ($entry['product']['name'] ?? ''));
             $raw = trim((string) ($entry['product_version'] ?? ''));
@@ -211,7 +220,16 @@ class EuvdSource extends AbstractSource
 
             // "patch: X" entries are fix metadata, not affected ranges.
             if (preg_match('/^patch(?:ed)?\s*:\s*(\S+)$/iu', $raw, $m)) {
-                $fixed[] = $m[1];
+                if ($singleProduct) {
+                    $fixed[] = $m[1];
+                } else {
+                    // Ambiguous — keep it as evidence, never as a fix claim.
+                    $ranges[] = array_filter([
+                        'raw' => $raw,
+                        'product' => $product !== '' ? $product : null,
+                        'source' => 'euvd',
+                    ], fn ($v) => $v !== null);
+                }
 
                 continue;
             }

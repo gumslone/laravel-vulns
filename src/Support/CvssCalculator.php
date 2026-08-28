@@ -125,6 +125,13 @@ class CvssCalculator
      */
     public function environmental(string $baseVector, array $modifiers): ?array
     {
+        // v4.0 recalculation is native to the MacroVector algorithm — route
+        // there so assessors can adjust v4-only advisories too. v4 modifier
+        // keys differ (MVC/MVI/MVA/MSC/MSI/MSA/MAT instead of MC/MI/MA/MS).
+        if (str_starts_with(ltrim($baseVector), 'CVSS:4.0/')) {
+            return Cvss4::environmental($baseVector, $modifiers);
+        }
+
         $base = $this->parse($baseVector);
         if (! $base) {
             return null;

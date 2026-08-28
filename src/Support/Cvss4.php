@@ -128,6 +128,12 @@ final class Cvss4
     ];
 
     /** The base score for a CVSS:4.0 vector string, or null if unparsable. */
+    /** Threat + environmental metric keys an assessor may override. */
+    private const MODIFIER_KEYS = [
+        'E', 'CR', 'IR', 'AR',
+        'MAV', 'MAC', 'MAT', 'MPR', 'MUI', 'MVC', 'MVI', 'MVA', 'MSC', 'MSI', 'MSA',
+    ];
+
     public static function baseScore(string $vector): ?float
     {
         $m = self::parse($vector);
@@ -135,6 +141,55 @@ final class Cvss4
             return null;
         }
 
+        return self::score($m);
+    }
+
+    /**
+     * Environmental/threat recalculation for CVSS v4.0 — the MacroVector
+     * algorithm scores modified metrics natively, so an assessor can lower
+     * the attack vector for an air-gapped deployment or raise requirements
+     * for sensitive data, exactly as with v3.
+     *
+     * @param  array<string, string>  $modifiers  e.g. ['MAV' => 'L', 'CR' => 'H', 'E' => 'P']; 'X' entries are ignored
+     * @return array{score: float, vector: string}|null  null when the base vector doesn't parse
+     */
+    public static function environmental(string $vector, array $modifiers): ?array
+    {
+        $m = self::parse($vector);
+        if ($m === null) {
+            return null;
+        }
+
+        $applied = [];
+        foreach ($modifiers as $key => $value) {
+            $key = strtoupper((string) $key);
+            $value = strtoupper(trim((string) $value));
+            if ($value !== '' && $value !== 'X' && in_array($key, self::MODIFIER_KEYS, true)) {
+                $m[$key] = $value;
+                $applied[$key] = $value;
+            }
+        }
+
+        $score = self::score($m);
+        if ($score === null) {
+            return null;
+        }
+
+        // The extended vector: base string plus the applied modifiers in
+        // the specification's metric order.
+        $suffix = '';
+        foreach (self::MODIFIER_KEYS as $key) {
+            if (isset($applied[$key])) {
+                $suffix .= "/{$key}:{$applied[$key]}";
+            }
+        }
+
+        return ['score' => $score, 'vector' => rtrim(trim($vector), '/').$suffix];
+    }
+
+    /** @param array<string, string> $m parsed + defaulted metric map */
+    private static function score(array $m): ?float
+    {
         // No impact anywhere scores a flat zero (official shortcut).
         $noImpact = true;
         foreach (['VC', 'VI', 'VA', 'SC', 'SI', 'SA'] as $metric) {
