@@ -6,7 +6,6 @@ use Gumslone\Vulns\Sources\SnykSource;
 use Gumslone\Vulns\VulnsServiceProvider;
 use Gumslone\Vulns\VulnSearch;
 
-uses(Gumslone\Vulns\Tests\TestCase::class)->in(__DIR__);
 
 it('resolves VulnSearch with every source, straight out of the box', function () {
     $search = app(VulnSearch::class);

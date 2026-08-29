@@ -48,6 +48,22 @@ return [
     | a failing feed leaves results un-enriched and lands in errors().
     |
     */
+    /*
+    |--------------------------------------------------------------------------
+    | Built-in search UI
+    |--------------------------------------------------------------------------
+    |
+    | A single dependency-free page: paste an advisory id, purl, CPE, commit
+    | or package URL and see the merged, enriched results. Disabled by
+    | default — enable it and put auth middleware in front for production.
+    |
+    */
+    'ui' => [
+        'enabled' => env('VULNS_UI_ENABLED', false),
+        'path' => env('VULNS_UI_PATH', 'vulns'),
+        'middleware' => ['web'],
+    ],
+
     'epss' => [
         'enabled' => env('VULNS_EPSS_ENABLED', true),
         'base_url' => env('VULNS_EPSS_URL', 'https://api.first.org/data/v1/epss'),

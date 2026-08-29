@@ -28,7 +28,26 @@ service provider is optional sugar.
 
 ```bash
 composer require gumslone/laravel-vulns
+php artisan vulns:install        # interactive: publishes config, asks for the
+                                 # optional API keys (written to .env), offers
+                                 # the built-in UI; --check smoke-tests every
+                                 # enabled source against a live query
 ```
+
+### Built-in search UI
+
+One dependency-free page at `/vulns` (no build step): paste anything
+`searchAny()` accepts — advisory id, purl, CPE, commit sha, release/download
+URL — and see the merged, enriched results with KEV / ransomware / exploit
+tags, plus a warning when a source failed (empty + failed source = shown as
+inconclusive, never as a clean bill). Off by default:
+
+```dotenv
+VULNS_UI_ENABLED=true
+```
+
+Path and middleware are configurable (`vulns.ui`) — put your auth middleware
+in front for anything beyond local use.
 
 ## Searching
 

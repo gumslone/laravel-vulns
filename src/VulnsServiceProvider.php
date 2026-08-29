@@ -100,6 +100,16 @@ class VulnsServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../config/vulns.php' => config_path('vulns.php'),
             ], 'vulns-config');
+            $this->commands([\Gumslone\Vulns\Console\InstallCommand::class]);
+        }
+
+        // Opt-in single-page search UI (config vulns.ui) — enable only
+        // behind auth middleware in production.
+        if (config('vulns.ui.enabled')) {
+            $this->loadViewsFrom(__DIR__.'/../resources/views', 'vulns');
+            \Illuminate\Support\Facades\Route::middleware(config('vulns.ui.middleware', ['web']))
+                ->get(config('vulns.ui.path', 'vulns'), \Gumslone\Vulns\Http\SearchController::class)
+                ->name('vulns.search');
         }
     }
 
