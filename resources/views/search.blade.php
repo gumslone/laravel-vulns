@@ -82,7 +82,9 @@
                 @foreach ($results as $vuln)
                     <tr>
                         <td class="id">
-                            @if ($vuln->sourceUrl)<a href="{{ $vuln->sourceUrl }}" target="_blank" rel="noopener">{{ $vuln->vulnId }}</a>@else{{ $vuln->vulnId }}@endif
+                            {{-- Scheme allowlist: sourceUrl is feed-controlled; a
+                                 javascript: URL must never become a clickable link. --}}
+                            @if ($vuln->sourceUrl && preg_match('#^https?://#i', $vuln->sourceUrl))<a href="{{ $vuln->sourceUrl }}" target="_blank" rel="noopener">{{ $vuln->vulnId }}</a>@else{{ $vuln->vulnId }}@endif
                             @if ($vuln->isKnownExploited)<span class="tag kev" title="CISA Known Exploited Vulnerability">KEV</span>@endif
                             @if ($vuln->usedInRansomware)<span class="tag ransom" title="Known ransomware campaign use">RANSOM</span>@endif
                             @if ($vuln->exploitMaturity()->value !== 'none')<span class="tag exploit" title="Public exploit evidence">{{ strtoupper($vuln->exploitMaturity()->value) }}</span>@endif

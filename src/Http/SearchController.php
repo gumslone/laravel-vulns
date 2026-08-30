@@ -24,6 +24,12 @@ class SearchController
         $failure = null;
         $elapsed = null;
 
+        // No legitimate identifier is this long; cap before fan-out.
+        if (strlen($query) > 512) {
+            $query = '';
+            $failure = 'Query too long (max 512 characters).';
+        }
+
         if ($query !== '') {
             $start = microtime(true);
             try {

@@ -116,3 +116,25 @@ it('marks empty results as inconclusive when a source failed', function () {
         ->assertSee('results may be incomplete')
         ->assertSee('inconclusive');
 });
+
+it('caps query length and never links javascript: source URLs', function () {
+    config(['vulns.ui.enabled' => true, 'app.key' => 'base64:'.base64_encode(random_bytes(32))]);
+    (new Gumslone\Vulns\VulnsServiceProvider(app()))->boot();
+
+    app()->instance(VulnSearch::class, uiSearch([
+        new VulnerabilityData(
+            vulnId: 'CVE-2030-90', source: 'osv', severity: 'high',
+            sourceUrl: 'javascript:alert(document.cookie)',
+        ),
+    ]));
+
+    // Feed-controlled javascript: URL renders as plain text, not a link.
+    $this->get('/vulns?q=pkg:npm/x@1.0')
+        ->assertOk()
+        ->assertDontSee('href="javascript:', false);
+
+    // Oversized query is rejected before any source fan-out.
+    $this->get('/vulns?q='.str_repeat('a', 600))
+        ->assertOk()
+        ->assertSee('Query too long');
+});

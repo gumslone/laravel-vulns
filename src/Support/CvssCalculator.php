@@ -137,7 +137,12 @@ class CvssCalculator
             return null;
         }
 
-        $modifiers = array_map('strtoupper', array_filter($modifiers, fn ($v) => $v !== null && $v !== ''));
+        // Keys uppercase too, so 'mav' behaves the same on the v3 and v4
+        // paths instead of being silently ignored here.
+        $modifiers = array_change_key_case(
+            array_map('strtoupper', array_filter($modifiers, fn ($v) => $v !== null && $v !== '')),
+            CASE_UPPER,
+        );
 
         $get = fn (string $modified, string $baseKey) => (($modifiers[$modified] ?? 'X') !== 'X')
             ? $modifiers[$modified]

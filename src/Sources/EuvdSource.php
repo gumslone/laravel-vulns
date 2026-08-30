@@ -206,10 +206,14 @@ class EuvdSource extends AbstractSource
         // only unambiguous when the advisory concerns a single product —
         // in a multi-product advisory another product's patch would wrongly
         // feed isPastAllFixes for ours.
-        $products = collect($item['enisaIdProduct'] ?? [])
-            ->map(fn ($e) => strtolower(trim((string) ($e['product']['name'] ?? ''))))
-            ->filter()->unique();
-        $singleProduct = $products->count() <= 1;
+        $names = collect($item['enisaIdProduct'] ?? [])
+            ->map(fn ($e) => strtolower(trim((string) ($e['product']['name'] ?? ''))));
+        // "Single product" requires every entry to be NAMED and all names to
+        // agree — unnamed entries (old backfilled records) make the patch's
+        // owner unidentifiable, so the claim stays ambiguous.
+        $singleProduct = $names->isNotEmpty()
+            && $names->unique()->count() === 1
+            && $names->first() !== '';
 
         foreach ($item['enisaIdProduct'] ?? [] as $entry) {
             $product = trim((string) ($entry['product']['name'] ?? ''));

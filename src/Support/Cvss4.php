@@ -127,11 +127,28 @@ final class Cvss4
         '212101' => 2.4, '212111' => 1.2, '212121' => 0.5, '212201' => 1, '212211' => 0.3, '212221' => 0.1,
     ];
 
-    /** The base score for a CVSS:4.0 vector string, or null if unparsable. */
-    /** Threat + environmental metric keys an assessor may override. */
-    private const MODIFIER_KEYS = [
-        'E', 'CR', 'IR', 'AR',
-        'MAV', 'MAC', 'MAT', 'MPR', 'MUI', 'MVC', 'MVI', 'MVA', 'MSC', 'MSI', 'MSA',
+    /**
+     * Threat + environmental metrics an assessor may override, with their
+     * legal values. Value validation matters: an unknown value would either
+     * silently score as a different level (E:Z reads as E:U — the LOWEST
+     * threat) or emit undefined-index warnings mid-computation.
+     */
+    private const MODIFIER_VALUES = [
+        'E' => ['A', 'P', 'U'],
+        'CR' => ['H', 'M', 'L'],
+        'IR' => ['H', 'M', 'L'],
+        'AR' => ['H', 'M', 'L'],
+        'MAV' => ['N', 'A', 'L', 'P'],
+        'MAC' => ['L', 'H'],
+        'MAT' => ['N', 'P'],
+        'MPR' => ['N', 'L', 'H'],
+        'MUI' => ['N', 'P', 'A'],
+        'MVC' => ['H', 'L', 'N'],
+        'MVI' => ['H', 'L', 'N'],
+        'MVA' => ['H', 'L', 'N'],
+        'MSC' => ['H', 'L', 'N'],
+        'MSI' => ['S', 'H', 'L', 'N'],
+        'MSA' => ['S', 'H', 'L', 'N'],
     ];
 
     public static function baseScore(string $vector): ?float
@@ -151,7 +168,7 @@ final class Cvss4
      * for sensitive data, exactly as with v3.
      *
      * @param  array<string, string>  $modifiers  e.g. ['MAV' => 'L', 'CR' => 'H', 'E' => 'P']; 'X' entries are ignored
-     * @return array{score: float, vector: string}|null  null when the base vector doesn't parse
+     * @return array{score: float, vector: string}|null  null when the base vector doesn't parse OR a modifier value is invalid
      */
     public static function environmental(string $vector, array $modifiers): ?array
     {
@@ -164,10 +181,15 @@ final class Cvss4
         foreach ($modifiers as $key => $value) {
             $key = strtoupper((string) $key);
             $value = strtoupper(trim((string) $value));
-            if ($value !== '' && $value !== 'X' && in_array($key, self::MODIFIER_KEYS, true)) {
-                $m[$key] = $value;
-                $applied[$key] = $value;
+            if ($value === '' || $value === 'X' || ! isset(self::MODIFIER_VALUES[$key])) {
+                continue; // unknown keys and "not defined" are no-ops
             }
+            // An invalid VALUE must fail loudly, not score as something else.
+            if (! in_array($value, self::MODIFIER_VALUES[$key], true)) {
+                return null;
+            }
+            $m[$key] = $value;
+            $applied[$key] = $value;
         }
 
         $score = self::score($m);
@@ -175,16 +197,22 @@ final class Cvss4
             return null;
         }
 
-        // The extended vector: base string plus the applied modifiers in
-        // the specification's metric order.
+        // The extended vector: the base string with any overridden metric
+        // removed (a base vector may already carry E/CR/…), then the applied
+        // modifiers appended in the specification's metric order — never a
+        // duplicated metric.
+        $base = rtrim(trim($vector), '/');
+        foreach (array_keys($applied) as $key) {
+            $base = (string) preg_replace('#/'.$key.':[^/]+#', '', $base);
+        }
         $suffix = '';
-        foreach (self::MODIFIER_KEYS as $key) {
+        foreach (array_keys(self::MODIFIER_VALUES) as $key) {
             if (isset($applied[$key])) {
                 $suffix .= "/{$key}:{$applied[$key]}";
             }
         }
 
-        return ['score' => $score, 'vector' => rtrim(trim($vector), '/').$suffix];
+        return ['score' => $score, 'vector' => $base.$suffix];
     }
 
     /** @param array<string, string> $m parsed + defaulted metric map */

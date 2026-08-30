@@ -46,3 +46,28 @@ it('runs without touching .env when everything is skipped', function () {
 
     @unlink($envFile);
 });
+
+it('writes values containing $0, ${VAR} and quotes so they survive phpdotenv intact', function () {
+    $envFile = sys_get_temp_dir().'/vulns-install-test-'.uniqid().'.env';
+    file_put_contents($envFile, "APP_NAME=demo\nNVD_API_KEY=old\n");
+    app()->loadEnvironmentFrom(basename($envFile));
+    app()->useEnvironmentPath(dirname($envFile));
+
+    $tricky = 'pa$0word-${APP_NAME}-"q\\';
+    $this->artisan('vulns:install')
+        ->expectsConfirmation('Configure source credentials now?', 'yes')
+        ->expectsQuestion('NVD API key (free at nvd.nist.gov/developers — raises 5 req/30s to 50) [enter to skip]', $tricky)
+        ->expectsQuestion('GitHub token (classic PAT, no scopes — unlocks the Advisory DB GraphQL feed) [enter to skip]', '')
+        ->expectsQuestion('Snyk API token (commercial; leave empty to skip) [enter to skip]', '')
+        ->expectsQuestion('Sonatype OSS Index username (free account; required — anonymous access 401s) [enter to skip]', '')
+        ->expectsQuestion('VulnCheck Community token (free — "NVD++" by-id lookups) [enter to skip]', '')
+        ->expectsConfirmation('Enable the built-in search UI at /vulns? (enable only behind auth in production)', 'no')
+        ->assertSuccessful();
+
+    // $0 must not expand to the matched line; ${APP_NAME} must not interpolate.
+    $vars = Dotenv\Dotenv::createArrayBacked(dirname($envFile), basename($envFile))->load();
+    expect($vars['NVD_API_KEY'])->toBe($tricky)
+        ->and(file_get_contents($envFile))->not->toContain('old');
+
+    @unlink($envFile);
+});

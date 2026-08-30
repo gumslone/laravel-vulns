@@ -150,3 +150,21 @@ it('treats a 200 with an HTML body as a failed request, not zero vulnerabilities
 
     $source->queryBatch([new PackageData(name: 'curl', version: '8.4.0', ecosystem: 'generic')]);
 })->throws(RuntimeException::class, 'malformed response body');
+
+it('treats an advisory with unnamed product entries as ambiguous for patch claims', function () {
+    $item = [
+        'id' => 'EUVD-2030-60',
+        'description' => 'Backfilled record without product names.',
+        'aliases' => 'CVE-2030-60',
+        'enisaIdProduct' => [
+            ['product' => ['name' => ''], 'product_version' => 'patch: 9.9'],
+            ['product' => ['name' => ''], 'product_version' => '0 ≤2.0'],
+        ],
+    ];
+    $vuln = euvdSource([euvdSearch([$item])])->queryBatch([
+        new PackageData(name: 'whatever', version: '1.0', ecosystem: 'generic'),
+    ])[0][0];
+
+    expect($vuln->fixedVersions)->toBe([])
+        ->and($vuln->isFixed)->toBeFalse();
+});

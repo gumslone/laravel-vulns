@@ -61,7 +61,9 @@ return [
     'ui' => [
         'enabled' => env('VULNS_UI_ENABLED', false),
         'path' => env('VULNS_UI_PATH', 'vulns'),
-        'middleware' => ['web'],
+        // Throttled by default: every search fans out to all enabled sources
+        // (burning YOUR rate-limited API quotas). Add auth for production.
+        'middleware' => ['web', 'throttle:30,1'],
     ],
 
     'epss' => [

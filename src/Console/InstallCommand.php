@@ -89,9 +89,18 @@ class InstallCommand extends Command
         $contents = is_file($path) ? (string) file_get_contents($path) : '';
 
         foreach ($env as $key => $value) {
-            $line = $key.'="'.addcslashes($value, '"\\').'"';
+            if (preg_match('/[\r\n]/', $value)) {
+                $this->components->error("Skipping {$key}: value contains a line break.");
+
+                continue;
+            }
+            // Escape \, " and $ — phpdotenv interpolates ${VAR} inside
+            // double quotes, which would silently mutate a secret containing
+            // it. The replacement goes through a callback so preg_replace
+            // never interprets $0/$1 sequences inside the VALUE.
+            $line = $key.'="'.addcslashes($value, '"\\$').'"';
             $contents = preg_match("/^{$key}=.*$/m", $contents)
-                ? (string) preg_replace("/^{$key}=.*$/m", $line, $contents)
+                ? (string) preg_replace_callback("/^{$key}=.*$/m", fn () => $line, $contents)
                 : rtrim($contents, "\n")."\n{$line}\n";
         }
 

@@ -63,3 +63,34 @@ it('routes v4 vectors through the version-agnostic calculator entry point', func
     expect($calc->baseScore('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N'))->toBe(9.3)
         ->and($calc->baseScore('CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H'))->toBe(9.8);
 });
+
+it('rejects invalid modifier values instead of silently mis-scoring', function () {
+    $base = 'CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N';
+
+    // E:Z would otherwise read as E:U — the LOWEST threat level.
+    expect(Cvss4::environmental($base, ['E' => 'Z']))->toBeNull()
+        ->and(Cvss4::environmental($base, ['MAV' => 'Q']))->toBeNull()
+        // v3-style values on v4 metrics are invalid too, not reinterpreted.
+        ->and(Cvss4::environmental($base, ['MUI' => 'R']))->toBeNull();
+});
+
+it('never duplicates a metric when the base vector already carries it', function () {
+    $base = 'CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:P/CR:M';
+    $result = Cvss4::environmental($base, ['E' => 'A', 'CR' => 'H', 'MAV' => 'P']);
+
+    expect(substr_count($result['vector'], '/E:'))->toBe(1)
+        ->and(substr_count($result['vector'], '/CR:'))->toBe(1)
+        ->and($result['vector'])->toContain('/E:A')
+        ->and($result['vector'])->toContain('/CR:H')
+        ->and($result['vector'])->not->toContain('/E:P');
+});
+
+it('applies lowercase modifier keys identically on the v3 and v4 paths', function () {
+    $calc = new CvssCalculator;
+
+    $v4 = $calc->environmental('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N', ['mav' => 'p']);
+    $v3 = $calc->environmental('CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H', ['mav' => 'p']);
+
+    expect($v4['score'])->toBe(7.0)
+        ->and($v3['score'])->toBeLessThan(9.8); // applied, not silently ignored
+});
