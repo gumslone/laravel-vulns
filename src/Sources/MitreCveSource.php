@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Sources;
 
+use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\GuzzleException;
+use Illuminate\Support\Collection;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * MITRE CVE Services adapter — the authoritative CVE List V5 record API
@@ -22,7 +26,7 @@ use GuzzleHttp\Exception\GuzzleException;
  */
 class MitreCveSource extends AbstractSource
 {
-    public function __construct(?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         $this->http = $http ?? $this->makeClient(
@@ -40,6 +44,12 @@ class MitreCveSource extends AbstractSource
      * call (see class docblock). Every input key is still present in the
      * result so callers can attribute per-package outcomes uniformly.
      */
+    /** Id lookups only — no package search. */
+    public function supports(PackageData $package): bool
+    {
+        return false;
+    }
+
     public function queryBatch(array $packages): array
     {
         return array_fill_keys(array_keys($packages), []);
@@ -104,6 +114,7 @@ class MitreCveSource extends AbstractSource
         [$v2Score, $v2Vector] = $this->firstMetric($metricSets, ['cvssV2_0']);
 
         $bestScore = $v4Score ?? $v3Score ?? $v2Score;
+        $ssvc = $this->ssvc($record['containers']['adp'] ?? []);
 
         $cwes = [];
         foreach ($cna['problemTypes'] ?? [] as $problemType) {
@@ -132,6 +143,7 @@ class MitreCveSource extends AbstractSource
             cvssV4Score: $v4Score,
             cvssV4Vector: $v4Vector,
             isWithdrawn: ($meta['state'] ?? '') === 'REJECTED',
+            ssvc: $ssvc,
             references: $references,
             cwes: array_values(array_unique($cwes)),
             sourcePublishedAt: isset($meta['datePublished']) ? new \DateTime($meta['datePublished']) : null,
@@ -151,7 +163,7 @@ class MitreCveSource extends AbstractSource
     /**
      * First metric set carrying any of the given CVSS keys → [score, vector].
      *
-     * @param  \Illuminate\Support\Collection<int, array>  $metricSets
+     * @param  Collection<int, array>  $metricSets
      * @param  string[]  $keys
      * @return array{0: ?float, 1: ?string}
      */
@@ -166,5 +178,41 @@ class MitreCveSource extends AbstractSource
         }
 
         return [null, null];
+    }
+
+    /**
+     * CISA's SSVC decision points from the ADP container (vulnrichment):
+     * `metrics[].other.type === "ssvc"` with `content.options` such as
+     * {"Exploitation": "active"} — normalised to snake_case lowercase keys.
+     *
+     * @return array<string, string>
+     */
+    private function ssvc(array $adps): array
+    {
+        foreach ($adps as $adp) {
+            foreach ($adp['metrics'] ?? [] as $metric) {
+                $other = $metric['other'] ?? null;
+                if (! is_array($other) || strtolower((string) ($other['type'] ?? '')) !== 'ssvc') {
+                    continue;
+                }
+                $content = $other['content'] ?? [];
+                $ssvc = [];
+                foreach ($content['options'] ?? [] as $option) {
+                    foreach ((array) $option as $point => $value) {
+                        $ssvc[strtolower(str_replace(' ', '_', trim((string) $point)))] = strtolower(trim((string) $value));
+                    }
+                }
+                foreach (['version', 'timestamp', 'role'] as $key) {
+                    if (! empty($content[$key])) {
+                        $ssvc[$key] = (string) $content[$key];
+                    }
+                }
+                if ($ssvc !== []) {
+                    return $ssvc;
+                }
+            }
+        }
+
+        return [];
     }
 }

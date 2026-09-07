@@ -10,6 +10,7 @@ use Gumslone\Vulns\Support\RetryHandlerFactory;
 use GuzzleHttp\Client;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * Shared plumbing for vulnerability sources: config-driven Guzzle client
@@ -27,7 +28,7 @@ abstract class AbstractSource implements Source
 
     protected LoggerInterface $logger;
 
-    protected ?\Psr\SimpleCache\CacheInterface $cache = null;
+    protected ?CacheInterface $cache = null;
 
     /** @var array<string, mixed> */
     protected array $options = [];
@@ -42,6 +43,16 @@ abstract class AbstractSource implements Source
     public function queryPackage(PackageData $package): array
     {
         return $this->queryBatch([$package])[0] ?? [];
+    }
+
+    /**
+     * Whether this source can look the package up at all — the coordinates
+     * it keys on are present and mapped. queryBatch() still skips silently;
+     * VulnSearch::coverage() uses this to tell "not covered" from "clean".
+     */
+    public function supports(PackageData $package): bool
+    {
+        return true;
     }
 
     /** Read a key from this source's config array. */
@@ -83,7 +94,7 @@ abstract class AbstractSource implements Source
     }
 
     /** Shared constructor plumbing for subclasses. */
-    protected function boot(array $options, ?LoggerInterface $logger, ?\Psr\SimpleCache\CacheInterface $cache = null): void
+    protected function boot(array $options, ?LoggerInterface $logger, ?CacheInterface $cache = null): void
     {
         $this->options = $options;
         $this->logger = $logger ?? new NullLogger;

@@ -225,6 +225,59 @@ $search->fetchById('CVE-2021-44228');
 $search->fetchById('GHSA-jfh8-c2jp-5v3q');
 ```
 
+### Knowing what was covered
+
+An empty answer from a source means "nothing found" only if the source could
+look the package up at all — an unmapped ecosystem, a purl-less package on a
+purl-keyed feed, or an id-only feed never does. `coverage()` says which
+sources actually queried each package in the last batch search:
+
+```php
+$search->searchBatch(['lodash' => $pkg]);
+$search->coverage()['lodash'];
+// ['queried' => ['osv', 'github', 'nvd'], 'skipped' => ['snyk', 'mitre'], 'failed' => ['euvd']]
+```
+
+Nothing queried is "not covered", not "clean" — treat it like `errors()`.
+
+### Storing and rehydrating records
+
+`toArray()` / `fromArray()` round-trip a record, so a stored snapshot can be
+rebuilt for `changesSince()` / `refresh()`. Inferred values (see below) are
+re-derived rather than restored, so the snapshot stays faithful to its source:
+
+```php
+$stored = VulnerabilityData::fromArray($row);   // toArray() shape, snake or camelCase keys
+$search->refresh($stored)?->isMajor();
+```
+
+### Triage helpers
+
+```php
+$v->isMalware();             // MAL- ids, Snyk "malware" issues, OSV malicious-package origins
+$v->isActivelyExploited();   // CISA KEV, or SSVC exploitation "active" on the CVE record
+$v->ssvc;                    // ['exploitation' => 'active', 'automatable' => 'no',
+                             //  'technical_impact' => 'total', …] — CISA's SSVC decision
+                             //  points from the CVE record's ADP container (MITRE source)
+VersionRange::recommendedFix('4.17.20', $v->fixedVersions);  // "4.17.21" — the lowest fix
+                             // at or above your version, same major line first; null when past all
+```
+
+SSVC "active" counts as exploited in `exploitMaturity()` (weaponized) and in
+`changesSince()` (a `KnownExploited` major change), whether or not KEV has
+caught up.
+
+### From the terminal
+
+```bash
+php artisan vulns:search CVE-2021-44228
+php artisan vulns:search pkg:npm/lodash@4.17.20 --source=osv --source=nvd
+php artisan vulns:search 'cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*' --json --latest
+```
+
+Exits non-zero when a source failed (results may be incomplete) or the query
+is unrecognisable — never merely because advisories were found.
+
 ### Calling one source directly
 
 ```php
@@ -512,6 +565,21 @@ usually keep the finding and flag it for review rather than silently drop it).
   wider set of feeds. Different tool, different job: that one answers
   "tell me about this identifier", this one answers "what affects this
   package at this version".
+
+## Testing code that uses this package
+
+`Gumslone\Vulns\Testing\FakeSource` is a canned source for your own tests —
+answers by package name or purl, finds records by id or alias, and can be
+made to fail so the "source down" path is exercised:
+
+```php
+use Gumslone\Vulns\Testing\FakeSource;
+
+$search = new VulnSearch([
+    new FakeSource('osv', ['lodash' => [$vuln]]),
+    (new FakeSource('nvd'))->failing('503 Service Unavailable'),
+]);
+```
 
 ## Tests
 

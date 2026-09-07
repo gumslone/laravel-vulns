@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Sources;
 
+use Gumslone\Vulns\Contracts\CpeLookup;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
-use Gumslone\Vulns\Contracts\CpeLookup;
 use Gumslone\Vulns\Support\CpeResolver;
 use Gumslone\Vulns\Support\ResolvesLookupCpe;
+use Gumslone\Vulns\Support\Version;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * NIST National Vulnerability Database adapter.
@@ -23,10 +26,9 @@ class NvdSource extends AbstractSource
 {
     use ResolvesLookupCpe;
 
-
     private ?string $apiKey;
 
-    public function __construct(private readonly CpeResolver $cpeResolver, private readonly ?CpeLookup $cpeLookup = null, ?\GuzzleHttp\Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(private readonly CpeResolver $cpeResolver, private readonly ?CpeLookup $cpeLookup = null, ?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         $this->apiKey = $this->config('api_key');
@@ -96,6 +98,11 @@ class NvdSource extends AbstractSource
         ]);
 
         return $vulns;
+    }
+
+    public function supports(PackageData $package): bool
+    {
+        return $this->resolveLookupCpe($package) !== null;
     }
 
     public function queryBatch(array $packages): array
@@ -190,7 +197,7 @@ class NvdSource extends AbstractSource
             return true; // no version data — keep and let assessment decide
         }
 
-        $version = \Gumslone\Vulns\Support\Version::normalize($package->version);
+        $version = Version::normalize($package->version);
 
         foreach ($configurations as $config) {
             foreach ($config['nodes'] ?? [] as $node) {

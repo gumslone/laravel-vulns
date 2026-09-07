@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Sources;
 
+use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
 use Gumslone\Vulns\Support\PurlBuilder;
@@ -51,6 +52,12 @@ class OssIndexSource extends AbstractSource
     public function name(): string
     {
         return 'oss_index';
+    }
+
+    public function supports(PackageData $package): bool
+    {
+        return $package->version !== null
+            && ($package->purl ?? $this->purlBuilder->fromPackageArray($package->toArray())) !== null;
     }
 
     public function queryBatch(array $packages): array

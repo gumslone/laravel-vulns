@@ -11,6 +11,8 @@ use Gumslone\Vulns\Support\CvssCalculator;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Pool;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * Google OSV (Open Source Vulnerabilities) adapter.
@@ -23,10 +25,9 @@ class OsvSource extends AbstractSource
     /** OSV rejects querybatch requests with more than 1000 queries. */
     private const QUERYBATCH_MAX = 1000;
 
-
     private string $baseUrl;
 
-    public function __construct(?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
 
@@ -78,6 +79,11 @@ class OsvSource extends AbstractSource
         } while (! empty($payload['page_token']));
 
         return $vulns;
+    }
+
+    public function supports(PackageData $package): bool
+    {
+        return $this->queryable($package);
     }
 
     public function queryBatch(array $packages): array
@@ -406,7 +412,7 @@ class OsvSource extends AbstractSource
     }
 
     /** Whether OSV can answer for this package at all. */
-    private function queryable(\Gumslone\Vulns\Data\PackageData $package): bool
+    private function queryable(PackageData $package): bool
     {
         if (in_array($package->ecosystem, ['deb', 'apk', 'rpm'], true) && $package->purl) {
             return true;

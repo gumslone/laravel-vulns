@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Gumslone\Vulns\Sources;
 
 use Gumslone\Vulns\Contracts\CpeLookup;
+use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
 use Gumslone\Vulns\Support\CpeResolver;
@@ -39,6 +40,11 @@ class CveSearchSource extends AbstractSource
     public function name(): string
     {
         return 'cve_search';
+    }
+
+    public function supports(PackageData $package): bool
+    {
+        return $this->resolveLookupCpe($package) !== null;
     }
 
     public function queryBatch(array $packages): array

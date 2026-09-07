@@ -88,6 +88,12 @@ class GitHubAdvisorySource extends AbstractSource
         return (bool) $this->config('enabled', true);
     }
 
+    public function supports(PackageData $package): bool
+    {
+        return (isset(self::ECOSYSTEM_MAP[$package->ecosystem]) && (bool) $this->config('token'))
+            || ($package->ecosystem === 'github' && str_contains($package->name, '/'));
+    }
+
     public function queryBatch(array $packages): array
     {
         $results = array_fill_keys(array_keys($packages), []);

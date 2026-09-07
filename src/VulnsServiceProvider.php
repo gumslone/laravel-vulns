@@ -4,19 +4,31 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns;
 
+use Gumslone\Vulns\Console\InstallCommand;
+use Gumslone\Vulns\Console\SearchCommand;
 use Gumslone\Vulns\Contracts\CpeLookup;
 use Gumslone\Vulns\Contracts\Source;
+use Gumslone\Vulns\Enrichment\ThreatEnricher;
+use Gumslone\Vulns\Http\SearchController;
 use Gumslone\Vulns\Sources\CveSearchSource;
 use Gumslone\Vulns\Sources\EuvdSource;
 use Gumslone\Vulns\Sources\GitHubAdvisorySource;
+use Gumslone\Vulns\Sources\MitreCveSource;
 use Gumslone\Vulns\Sources\NvdSource;
+use Gumslone\Vulns\Sources\OssIndexSource;
 use Gumslone\Vulns\Sources\OsvSource;
+use Gumslone\Vulns\Sources\RedHatSource;
+use Gumslone\Vulns\Sources\ShodanCvedbSource;
 use Gumslone\Vulns\Sources\SnykSource;
+use Gumslone\Vulns\Sources\VulnCheckSource;
 use Gumslone\Vulns\Support\CpeResolver;
 use Gumslone\Vulns\Support\PurlBuilder;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * Wires the framework-free sources into a Laravel app: config from
@@ -34,11 +46,11 @@ class VulnsServiceProvider extends ServiceProvider
         'cve_search' => CveSearchSource::class,
         'euvd' => EuvdSource::class,
         'snyk' => SnykSource::class,
-        'oss_index' => \Gumslone\Vulns\Sources\OssIndexSource::class,
-        'redhat' => \Gumslone\Vulns\Sources\RedHatSource::class,
-        'shodan_cvedb' => \Gumslone\Vulns\Sources\ShodanCvedbSource::class,
-        'mitre' => \Gumslone\Vulns\Sources\MitreCveSource::class,
-        'vulncheck' => \Gumslone\Vulns\Sources\VulnCheckSource::class,
+        'oss_index' => OssIndexSource::class,
+        'redhat' => RedHatSource::class,
+        'shodan_cvedb' => ShodanCvedbSource::class,
+        'mitre' => MitreCveSource::class,
+        'vulncheck' => VulnCheckSource::class,
     ];
 
     public function register(): void
@@ -61,7 +73,7 @@ class VulnsServiceProvider extends ServiceProvider
                     ...$this->deps(),
                 ),
                 SnykSource::class,
-                \Gumslone\Vulns\Sources\OssIndexSource::class => new $class(
+                OssIndexSource::class => new $class(
                     $app->make(PurlBuilder::class),
                     null,
                     $this->optionsFor($key),
@@ -79,7 +91,7 @@ class VulnsServiceProvider extends ServiceProvider
             ->values()
             ->all());
 
-        $this->app->singleton(\Gumslone\Vulns\Enrichment\ThreatEnricher::class, fn () => new \Gumslone\Vulns\Enrichment\ThreatEnricher(
+        $this->app->singleton(ThreatEnricher::class, fn () => new ThreatEnricher(
             null,
             ['epss' => (array) config('vulns.epss', []), 'kev' => (array) config('vulns.kev', [])],
             ...$this->deps(),
@@ -90,7 +102,7 @@ class VulnsServiceProvider extends ServiceProvider
             $app->tagged('vulns.sources'),
             config('vulns.priority'),
             config('vulns.merge', 'priority') === 'latest',
-            $app->make(\Gumslone\Vulns\Enrichment\ThreatEnricher::class),
+            $app->make(ThreatEnricher::class),
         ));
     }
 
@@ -100,15 +112,15 @@ class VulnsServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../config/vulns.php' => config_path('vulns.php'),
             ], 'vulns-config');
-            $this->commands([\Gumslone\Vulns\Console\InstallCommand::class]);
+            $this->commands([InstallCommand::class, SearchCommand::class]);
         }
 
         // Opt-in single-page search UI (config vulns.ui) — enable only
         // behind auth middleware in production.
         if (config('vulns.ui.enabled')) {
             $this->loadViewsFrom(__DIR__.'/../resources/views', 'vulns');
-            \Illuminate\Support\Facades\Route::middleware(config('vulns.ui.middleware', ['web']))
-                ->get(config('vulns.ui.path', 'vulns'), \Gumslone\Vulns\Http\SearchController::class)
+            Route::middleware(config('vulns.ui.middleware', ['web']))
+                ->get(config('vulns.ui.path', 'vulns'), SearchController::class)
                 ->name('vulns.search');
         }
     }
@@ -119,7 +131,7 @@ class VulnsServiceProvider extends ServiceProvider
         return (array) config("vulns.{$key}", []);
     }
 
-    /** @return array{0: \Psr\Log\LoggerInterface, 1: \Psr\SimpleCache\CacheInterface} */
+    /** @return array{0: LoggerInterface, 1: CacheInterface} */
     private function deps(): array
     {
         return [Log::getLogger(), Cache::store()];

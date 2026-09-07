@@ -8,6 +8,7 @@ use Gumslone\Vulns\Contracts\Source;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Enrichment\ThreatEnricher;
+use Gumslone\Vulns\Sources\AbstractSource;
 
 /**
  * Queries every enabled source and merges the answers.
@@ -32,6 +33,9 @@ class VulnSearch
 
     /** @var array<string, string> source name => error message from the last search */
     private array $errors = [];
+
+    /** @var array<array-key, array{queried: string[], skipped: string[], failed: string[]}> per package key */
+    private array $coverage = [];
 
     /** @var string[] */
     private readonly array $priority;
@@ -239,10 +243,23 @@ class VulnSearch
     {
         $results = array_fill_keys(array_keys($packages), []);
         $this->errors = [];
+        $this->coverage = array_fill_keys(array_keys($packages), ['queried' => [], 'skipped' => [], 'failed' => []]);
 
         foreach ($this->sources as $source) {
             if (! $source->isEnabled()) {
                 continue;
+            }
+
+            // Which packages this source can look up at all — an unmapped
+            // ecosystem, a purl-less package on a purl-keyed feed — so an
+            // empty answer can be told apart from "not covered".
+            $applicable = [];
+            foreach ($packages as $key => $package) {
+                if ($source instanceof AbstractSource && ! $source->supports($package)) {
+                    $this->coverage[$key]['skipped'][] = $source->name();
+                } else {
+                    $applicable[] = $key;
+                }
             }
 
             try {
@@ -251,8 +268,14 @@ class VulnSearch
                         $results[$key] = array_merge($results[$key], $vulns);
                     }
                 }
+                foreach ($applicable as $key) {
+                    $this->coverage[$key]['queried'][] = $source->name();
+                }
             } catch (\Throwable $e) {
                 $this->errors[$source->name()] = $e->getMessage();
+                foreach ($applicable as $key) {
+                    $this->coverage[$key]['failed'][] = $source->name();
+                }
             }
         }
 
@@ -340,6 +363,20 @@ class VulnSearch
     public function refresh(VulnerabilityData $stored): ?VulnChange
     {
         return $this->latest($stored->canonicalId())?->changesSince($stored);
+    }
+
+    /**
+     * Which sources actually looked at each package in the most recent
+     * batch search: `queried` answered, `skipped` could not look the package
+     * up at all (unmapped ecosystem, no purl/CPE/version, id-only feed),
+     * `failed` threw. An empty result with nothing queried is "not covered",
+     * not "clean" — surface it like errors().
+     *
+     * @return array<array-key, array{queried: string[], skipped: string[], failed: string[]}> keyed like the input
+     */
+    public function coverage(): array
+    {
+        return $this->coverage;
     }
 
     /**
@@ -456,6 +493,7 @@ class VulnSearch
             // flag survives the merge either way.
             isWithdrawn: $base->isWithdrawn || $other->isWithdrawn,
             isDisputed: $base->isDisputed || $other->isDisputed,
+            ssvc: $base->ssvc ?: $other->ssvc,
             aliases: $aliases,
             affectedEcosystems: $base->affectedEcosystems ?: $other->affectedEcosystems,
             // Version evidence is the scarcest signal — keep whichever has it.

@@ -11,6 +11,8 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Pool;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * Red Hat Security Data API adapter (free, no key required).
@@ -23,8 +25,7 @@ use GuzzleHttp\Pool;
  */
 class RedHatSource extends AbstractSource
 {
-
-    public function __construct(?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         $this->http = $http ?? $this->makeClient(
@@ -35,6 +36,11 @@ class RedHatSource extends AbstractSource
     public function name(): string
     {
         return 'redhat';
+    }
+
+    public function supports(PackageData $package): bool
+    {
+        return trim($package->name) !== '';
     }
 
     public function queryBatch(array $packages): array

@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Sources;
 
+use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Pool;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * Shodan CVEDB adapter — https://cvedb.shodan.io. Free, no API key.
@@ -28,7 +31,7 @@ use GuzzleHttp\Pool;
  */
 class ShodanCvedbSource extends AbstractSource
 {
-    public function __construct(?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         $this->http = $http ?? $this->makeClient(
@@ -39,6 +42,11 @@ class ShodanCvedbSource extends AbstractSource
     public function name(): string
     {
         return 'shodan_cvedb';
+    }
+
+    public function supports(PackageData $package): bool
+    {
+        return ($package->cpe23 !== null && $package->version !== null) || trim($package->name) !== '';
     }
 
     public function queryBatch(array $packages): array

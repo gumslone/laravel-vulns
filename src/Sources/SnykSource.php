@@ -50,6 +50,12 @@ class SnykSource extends AbstractSource
             && (bool) $this->orgId;
     }
 
+    public function supports(PackageData $package): bool
+    {
+        return $package->version !== null
+            && ($package->purl ?? $this->purlBuilder->fromPackageArray($package->toArray())) !== null;
+    }
+
     public function queryBatch(array $packages): array
     {
         $results = array_fill_keys(array_keys($packages), []);

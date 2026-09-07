@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Sources;
 
+use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\GuzzleException;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * VulnCheck Community API adapter — https://api.vulncheck.com/v3.
@@ -24,7 +27,7 @@ use GuzzleHttp\Exception\GuzzleException;
  */
 class VulnCheckSource extends AbstractSource
 {
-    public function __construct(?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         $this->http = $http ?? $this->makeClient(
@@ -51,6 +54,12 @@ class VulnCheckSource extends AbstractSource
      * elsewhere via fetchById. Every input key is still present so callers
      * can attribute per-package outcomes uniformly.
      */
+    /** Id lookups only — no package search. */
+    public function supports(PackageData $package): bool
+    {
+        return false;
+    }
+
     public function queryBatch(array $packages): array
     {
         return array_fill_keys(array_keys($packages), []);

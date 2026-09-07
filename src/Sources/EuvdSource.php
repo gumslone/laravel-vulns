@@ -7,9 +7,12 @@ namespace Gumslone\Vulns\Sources;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
+use Gumslone\Vulns\Support\VersionRange;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Pool;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * European Union Vulnerability Database (ENISA) adapter.
@@ -19,8 +22,7 @@ use GuzzleHttp\Pool;
  */
 class EuvdSource extends AbstractSource
 {
-
-    public function __construct(?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         // The API lives on the euvdservices host; the euvd.enisa.europa.eu
@@ -34,6 +36,11 @@ class EuvdSource extends AbstractSource
     public function name(): string
     {
         return 'euvd';
+    }
+
+    public function supports(PackageData $package): bool
+    {
+        return trim($package->name) !== '';
     }
 
     public function queryBatch(array $packages): array
@@ -344,6 +351,6 @@ class EuvdSource extends AbstractSource
             }
         }
 
-        return \Gumslone\Vulns\Support\VersionRange::isVulnerable($version, $relevant) !== false;
+        return VersionRange::isVulnerable($version, $relevant) !== false;
     }
 }

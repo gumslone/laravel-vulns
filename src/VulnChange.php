@@ -70,7 +70,9 @@ final class VulnChange
             }
         }
 
-        if ($current->isKnownExploited && ! $previous->isKnownExploited) {
+        // KEV listing or CISA's SSVC "exploitation: active" — both are
+        // confirmed in-the-wild exploitation.
+        if ($current->isActivelyExploited() && ! $previous->isActivelyExploited()) {
             $changes[] = ChangeType::KnownExploited;
         }
 

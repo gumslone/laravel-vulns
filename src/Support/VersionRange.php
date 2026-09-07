@@ -21,8 +21,51 @@ namespace Gumslone\Vulns\Support;
 final class VersionRange
 {
     /**
+     * The version to upgrade to: the lowest published fix at or above the
+     * current version, preferring one on the same major line (a patch
+     * release over a major bump). The lowest fix when the current version
+     * can't be compared; null when none is comparable or the current
+     * version is already past every fix.
+     *
+     * @param  string[]  $fixedVersions
+     */
+    public static function recommendedFix(?string $version, array $fixedVersions): ?string
+    {
+        $candidates = [];
+        foreach ($fixedVersions as $fixed) {
+            $comparable = Version::comparable((string) $fixed);
+            if ($comparable !== null) {
+                $candidates[$comparable] = (string) $fixed;
+            }
+        }
+        if ($candidates === []) {
+            return null;
+        }
+        uksort($candidates, 'version_compare');
+
+        $current = $version === null ? null : Version::comparable($version);
+        if ($current === null) {
+            return reset($candidates);
+        }
+
+        $major = explode('.', $current)[0];
+        foreach ($candidates as $comparable => $original) {
+            if (version_compare($comparable, $current, '>=') && explode('.', $comparable)[0] === $major) {
+                return $original;
+            }
+        }
+        foreach ($candidates as $comparable => $original) {
+            if (version_compare($comparable, $current, '>=')) {
+                return $original;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @param  array<int, array<string, mixed>|string>  $ranges  affectedRanges entries
-     * @return bool|null  true = in an affected range; false = provably outside every parseable range; null = undeterminable
+     * @return bool|null true = in an affected range; false = provably outside every parseable range; null = undeterminable
      */
     public static function isVulnerable(?string $version, array $ranges): ?bool
     {
