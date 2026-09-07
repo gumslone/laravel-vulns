@@ -145,6 +145,14 @@ settings survive `only()` / `except()` chaining, and the merged record's
 `sourceModifiedAt` always carries the base's timestamp so you can see how
 fresh the winning data is.
 
+For one advisory, `latest()` is the shortcut — every source asked, the most
+recently modified answer winning, EPSS/KEV stamped:
+
+```php
+$fresh = $search->latest('CVE-2021-44228');   // ?VulnerabilityData
+$search->errors();                            // feeds that failed — null + errors ≠ "gone"
+```
+
 ### EPSS and KEV: how likely, and actually exploited?
 
 CVSS says how bad; **EPSS** (FIRST.org) says how *likely* — the probability
@@ -188,6 +196,16 @@ deliberately as major as an upgrade — it can release an SLA-tracked
 assessment, which someone should look at rather than have slip through.
 A source *dropping* its score (value → null) is treated as upstream data
 loss, not a rescore.
+
+`refresh()` does the re-query and the comparison in one step — the freshest
+record for the stored advisory's canonical id (see `latest()`), classified
+against what you have:
+
+```php
+$change = $search->refresh($stored);   // ?VulnChange — null when no source knows it any more
+$change?->current;                     // the fresh merged record, ready to store
+$change?->isMajor();
+```
 
 Batching lets sources use their bulk endpoints and request pooling — one call
 for a whole lockfile, results keyed like the input:
@@ -374,12 +392,14 @@ $v->vulnId            // "CVE-2019-10744"
 $v->canonicalId()     // "CVE-2019-10744"  — the CVE even when a source keyed it on a GHSA
 $v->source            // "nvd"             — which source won the merge
 $v->severity          // Severity::Critical  (->value === "critical")
-$v->cvssV3Score       // 9.1
-$v->cvssV3Vector      // "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H"
+$v->cvssV3Score       // 9.1               — a score always has its vector and a
+$v->cvssV3Vector      // "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H"   vector its score (see below)
 $v->cvssV2Score       // 6.4               (also cvssV2Vector)
 $v->cvssV4Score       // 8.7|null          — v4 computed from the vector when
 $v->cvssV4Vector      //                     the source publishes only CVSS:4.0
 $v->effectiveCvssScore() // 8.7            — newest standard first: v4 → v3 → v2
+$v->cvss()            // CvssVector — the newest vector as an object (scores, metrics, adjustment)
+$v->inferredFields    // ["cvss_v2_vector"] — what this record filled in itself
 $v->epssScore         // 0.9432            — probability of exploitation within
 $v->epssPercentile    // 0.999               30 days (FIRST.org EPSS)
 $v->isKnownExploited  // true              — listed in CISA KEV
@@ -403,7 +423,7 @@ $v->isFixed           // true when a fix is published
 $v->cwes              // ["CWE-1321"]
 $v->references        // [["type" => …, "url" => "https://…"], …]
 $v->affectedEcosystems // ["npm"]         (OSV-style records)
-$v->sourceUrl         // "https://nvd.nist.gov/vuln/detail/CVE-2019-10744"
+$v->sourceUrl         // "https://nvd.nist.gov/vuln/detail/CVE-2019-10744" — never empty
 $v->sourcePublishedAt // DateTimeInterface|null
 $v->sourceModifiedAt  // DateTimeInterface|null
 $v->rawDataChecksum   // sha256 of the raw payload — cheap change detection
@@ -415,6 +435,55 @@ sources is what fills them in, so OSV's ranges and NVD's score end up on the
 same record. EPSS and KEV are stamped after the merge by the threat enricher
 (see above), and `$fresh->changesSince($stored)` classifies what a re-query
 changed — including landing in KEV or crossing the EPSS triage threshold.
+
+### CVSS: a score always has its vector
+
+Feeds are inconsistent here — EUVD, Snyk, Shodan and Red Hat often publish a
+bare score, OSV only a vector, and some file a CVSS:4.0 vector in the v3
+column. Every `VulnerabilityData` completes this on construction:
+
+- a vector without a score gets the score its base metrics compute (v2, v3
+  and v4 calculators — FIRST reference ports);
+- a score without a vector gets a **representative base vector that scores
+  exactly that** (`CvssVectorTable`: deterministic, the "obvious" vector for
+  each score — 9.8 → `AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`); a score no base
+  vector produces (a temporal or environmental figure) maps to the nearest one;
+- a vector lands in the slot of its own version, whatever slot it arrived in;
+- severity follows the best score when the source gave none;
+- `sourceUrl` is never empty — the canonical page for the id stands in (NVD
+  for CVEs, GitHub for GHSAs, the issuing database for OSV-indexed ids).
+
+Anything filled in this way is listed in `$v->inferredFields` (`isInferred('cvss_v3_vector')`,
+`reported('cvss_v3_vector')` for the source's own value or null), so reports
+can mark it — and the merge always prefers a source's own vector or link over
+another record's inferred one, whichever record wins. Merged records also
+keep every source's link in `$v->extra['source_urls']`.
+
+### Adjusting a score for your environment (vector merging)
+
+`CvssVector` (v2.0, v3.0, v3.1, v4.0) splits a vector into its base, temporal
+(v4: threat) and environmental groups. The base group is the advisory's and
+never changes — you adjust the other two and read the score each yields:
+
+```php
+use Gumslone\Vulns\Support\CvssVector;
+
+$cvss = $v->cvss();                                  // or CvssVector::parse($string)
+$cvss->baseScore();                                  // 9.8
+$cvss->withTemporal(['E' => 'P', 'RL' => 'O'])->temporalScore();          // 8.8
+$cvss->withEnvironmental(['MAV' => 'L', 'CR' => 'L'])->environmentalScore();
+$cvss->merge($mine);      // this base + $mine's temporal/environmental (theirs win)
+$cvss->fill($mine);       // this base + only the modifiers this vector lacks
+(string) $cvss;           // canonical string, groups in specification order
+
+// On the record: modifiers go onto the vector, the base score field stays
+$adjusted = $v->withCvssModifiers(['E' => 'P', 'MAV' => 'L']);
+$adjusted->cvssV3Score;          // 9.8 — untouched
+$adjusted->adjustedCvssScore();  // the environmental score the vector now expresses
+```
+
+Illegal metrics and cross-version merges throw (`InvalidArgumentException`)
+rather than silently scoring as something else; `X` / `ND` unsets a modifier.
 
 ### Does it actually affect my version?
 

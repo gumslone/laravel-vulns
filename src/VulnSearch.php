@@ -7,6 +7,7 @@ namespace Gumslone\Vulns;
 use Gumslone\Vulns\Contracts\Source;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
+use Gumslone\Vulns\Enrichment\ThreatEnricher;
 
 /**
  * Queries every enabled source and merges the answers.
@@ -44,7 +45,7 @@ class VulnSearch
         private readonly iterable $sources,
         ?array $priority = null,
         private readonly bool $preferLatest = false,
-        private readonly ?\Gumslone\Vulns\Enrichment\ThreatEnricher $enricher = null,
+        private readonly ?ThreatEnricher $enricher = null,
     ) {
         $this->priority = array_values(array_map('strtolower', $priority ?? self::DEFAULT_PRIORITY));
     }
@@ -123,7 +124,7 @@ class VulnSearch
      * A copy with a (different) threat enricher, or null to disable
      * EPSS / KEV stamping for this instance.
      */
-    public function withEnricher(?\Gumslone\Vulns\Enrichment\ThreatEnricher $enricher): self
+    public function withEnricher(?ThreatEnricher $enricher): self
     {
         return new self($this->sources, $this->priority, $this->preferLatest, $enricher);
     }
@@ -311,6 +312,37 @@ class VulnSearch
     }
 
     /**
+     * The freshest merged record for one advisory id: every enabled source
+     * asked, the most recently modified answer winning the merge — so a
+     * rescore or rewritten description reaches you whichever feed published
+     * it — then EPSS / KEV stamped. Null when no source knows the id; check
+     * errors() before reading that as "gone", a feed may just be down.
+     */
+    public function latest(string $vulnId): ?VulnerabilityData
+    {
+        $vulnId = trim($vulnId);
+        if (VulnerabilityData::isCveId($vulnId)) {
+            $vulnId = strtoupper($vulnId);
+        }
+
+        $fresh = $this->preferLatest ? $this : $this->preferLatest();
+        $found = $fresh->fetchById($vulnId);
+        $this->errors = $fresh->errors();
+
+        return $found;
+    }
+
+    /**
+     * Re-query a stored advisory and classify what changed: ->current is
+     * the fresh merged record, ->impact() whether triage should reopen.
+     * Null when no source knows it any more.
+     */
+    public function refresh(VulnerabilityData $stored): ?VulnChange
+    {
+        return $this->latest($stored->canonicalId())?->changesSince($stored);
+    }
+
+    /**
      * Source failures from the most recent search. Non-empty means results
      * may be incomplete — surface it rather than reporting a clean bill.
      *
@@ -367,6 +399,39 @@ class VulnSearch
             $base->aliases, $other->aliases, [$a->vulnId, $b->vulnId],
         ), fn (string $id) => $id !== $vulnId)));
 
+        // Scores merge as before — the base's opinion wins, gaps fill from
+        // the other (a score computed from a source's own vector is exact
+        // and counts as its opinion). Vectors are different: one inferred
+        // for a bare score is only representative, so a source's own
+        // vector beats it whichever record wins — provided it belongs to
+        // the score being kept. With none that fits, the merged record
+        // infers one again, so inferredFields stays truthful.
+        $cvss = function (int $v) use ($base, $other): array {
+            $score = $base->{"cvssV{$v}Score"} ?? $other->{"cvssV{$v}Score"};
+            foreach ([$base, $other] as $record) {
+                $vector = $record->reported("cvss_v{$v}_vector");
+                if ($vector !== null && ($score === null || $record->{"cvssV{$v}Score"} === $score)) {
+                    return [$score, $vector];
+                }
+            }
+
+            return [$score, null];
+        };
+        [$v2Score, $v2Vector] = $cvss(2);
+        // Severity likewise: only a source's stated rating counts (the base's
+        // first); one a record derived from its score is re-derived from the
+        // merged score, and stays flagged.
+        $severity = fn (VulnerabilityData $r) => $r->severity === Severity::Unknown ? null : $r->reported('severity');
+        [$v3Score, $v3Vector] = $cvss(3);
+        [$v4Score, $v4Vector] = $cvss(4);
+
+        // A source's own link beats a fallback one, and every source's own
+        // link survives the merge, keyed by source.
+        $sourceUrls = array_filter(
+            ($base->extra['source_urls'] ?? []) + ($other->extra['source_urls'] ?? [])
+            + [$base->source => $base->reported('source_url'), $other->source => $other->reported('source_url')],
+        );
+
         return new VulnerabilityData(
             vulnId: $vulnId,
             source: $base->source,
@@ -374,13 +439,13 @@ class VulnSearch
             details: $base->details ?? $other->details,
             // The base is authoritative when it has an opinion — taking the
             // max instead would undo a deliberate downward rescore.
-            severity: $base->severity !== Severity::Unknown ? $base->severity : $other->severity,
-            cvssV3Score: $base->cvssV3Score ?? $other->cvssV3Score,
-            cvssV3Vector: $base->cvssV3Vector ?? $other->cvssV3Vector,
-            cvssV2Score: $base->cvssV2Score ?? $other->cvssV2Score,
-            cvssV2Vector: $base->cvssV2Vector ?? $other->cvssV2Vector,
-            cvssV4Score: $base->cvssV4Score ?? $other->cvssV4Score,
-            cvssV4Vector: $base->cvssV4Vector ?? $other->cvssV4Vector,
+            severity: $severity($base) ?? $severity($other) ?? Severity::Unknown,
+            cvssV3Score: $v3Score,
+            cvssV3Vector: $v3Vector,
+            cvssV2Score: $v2Score,
+            cvssV2Vector: $v2Vector,
+            cvssV4Score: $v4Score,
+            cvssV4Vector: $v4Vector,
             epssScore: $base->epssScore ?? $other->epssScore,
             epssPercentile: $base->epssPercentile ?? $other->epssPercentile,
             isKnownExploited: $base->isKnownExploited || $other->isKnownExploited,
@@ -402,9 +467,11 @@ class VulnSearch
             remediationAdvice: $base->remediationAdvice ?? $other->remediationAdvice,
             sourcePublishedAt: $base->sourcePublishedAt ?? $other->sourcePublishedAt,
             sourceModifiedAt: $base->sourceModifiedAt ?? $other->sourceModifiedAt,
-            sourceUrl: $base->sourceUrl ?? $other->sourceUrl,
+            sourceUrl: $base->reported('source_url') ?? $other->reported('source_url'),
             rawDataChecksum: $base->rawDataChecksum,
-            extra: $base->extra + $other->extra,
+            // The pooled links must come FIRST: + is left-biased, and a pair-merge
+            // has already stored a (shorter) source_urls in the base's extra.
+            extra: ['source_urls' => $sourceUrls] + $base->extra + $other->extra,
         );
     }
 

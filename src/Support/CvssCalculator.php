@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Gumslone\Vulns\Support;
 
 /**
- * CVSS v3.0 / v3.1 score calculator (base and environmental metric groups).
+ * CVSS v3.0 / v3.1 score calculator (base and environmental metric groups);
+ * v2.0 and v4.0 vectors are routed to Cvss2 / Cvss4 so every public method
+ * accepts any version. CvssVector wraps all three behind one value object.
  *
  * Implements the FIRST.org specification so an assessor can recompute a
  * vulnerability's score for their specific environment — e.g. lowering the
@@ -86,15 +88,19 @@ class CvssCalculator
      */
     public function baseScore(string $vector): ?float
     {
-        // v4.0 vectors use a different scoring system entirely — route them
-        // to the MacroVector calculator so callers can stay version-agnostic.
-        if (str_starts_with(ltrim($vector), 'CVSS:4.0/')) {
-            return Cvss4::baseScore($vector);
-        }
+        // v4.0 and v2.0 use different equations entirely — route them to
+        // their calculators so callers can stay version-agnostic.
+        return match (CvssVector::majorVersionOf($vector)) {
+            4 => Cvss4::baseScore($vector),
+            2 => Cvss2::baseScore($vector),
+            default => ($m = $this->parse($vector)) ? $this->computeBase($m) : null,
+        };
+    }
 
-        $m = $this->parse($vector);
-
-        return $m ? $this->computeBase($m) : null;
+    /** '2.0' | '3.0' | '3.1' | '4.0' | null — see CvssVector::versionOf(). */
+    public function version(string $vector): ?string
+    {
+        return CvssVector::versionOf($vector);
     }
 
     /**
@@ -105,6 +111,15 @@ class CvssCalculator
      */
     public function temporalScore(string $baseVector, array $modifiers = []): ?float
     {
+        switch (CvssVector::majorVersionOf($baseVector)) {
+            case 4: // v4 has a single threat metric; the MacroVector scores it natively
+                return Cvss4::environmental($baseVector, array_intersect_key(
+                    array_change_key_case($modifiers, CASE_UPPER), ['E' => true],
+                ))['score'] ?? null;
+            case 2:
+                return Cvss2::temporalScore($baseVector, $modifiers);
+        }
+
         $base = $this->baseScore($baseVector);
         if ($base === null) {
             return null;
@@ -131,11 +146,15 @@ class CvssCalculator
         if (str_starts_with(ltrim($baseVector), 'CVSS:4.0/')) {
             return Cvss4::environmental($baseVector, $modifiers);
         }
+        if (CvssVector::majorVersionOf($baseVector) === 2) {
+            return Cvss2::environmental($baseVector, $modifiers);
+        }
 
         $base = $this->parse($baseVector);
         if (! $base) {
             return null;
         }
+        $version = CvssVector::versionOf($baseVector) ?? '3.1';
 
         // Keys uppercase too, so 'mav' behaves the same on the v3 and v4
         // paths instead of being silently ignored here.
@@ -172,9 +191,13 @@ class CvssCalculator
             0.915,
         );
 
-        $modifiedImpact = $scopeChanged
-            ? 7.52 * ($miss - 0.029) - 3.25 * (($miss * 0.9731 - 0.02) ** 13)
-            : 6.42 * $miss;
+        // v3.1 changed the scope-changed ModifiedImpact term (3.0 reused the
+        // base equation's (MISS − 0.02)^15); a 3.0 vector must score as 3.0.
+        $modifiedImpact = match (true) {
+            ! $scopeChanged => 6.42 * $miss,
+            $version === '3.0' => 7.52 * ($miss - 0.029) - 3.25 * (($miss - 0.02) ** 15),
+            default => 7.52 * ($miss - 0.029) - 3.25 * (($miss * 0.9731 - 0.02) ** 13),
+        };
 
         $prTable = $scopeChanged ? self::PR_CHANGED : self::PR_UNCHANGED;
         $modifiedExploitability = 8.22 * self::AV[$mav] * self::AC[$mac] * $prTable[$mpr] * self::UI[$mui];
@@ -190,7 +213,7 @@ class CvssCalculator
 
         return [
             'score' => $score,
-            'vector' => $this->buildEnvironmentalVector($base, $modifiers),
+            'vector' => $this->buildEnvironmentalVector($base, $modifiers, $version),
         ];
     }
 
@@ -246,10 +269,10 @@ class CvssCalculator
      * @param  array<string, string>  $base
      * @param  array<string, string>  $modifiers
      */
-    private function buildEnvironmentalVector(array $base, array $modifiers): string
+    private function buildEnvironmentalVector(array $base, array $modifiers, string $version = '3.1'): string
     {
         $order = ['AV', 'AC', 'PR', 'UI', 'S', 'C', 'I', 'A'];
-        $parts = ['CVSS:3.1'];
+        $parts = ["CVSS:{$version}"];
 
         foreach ($order as $key) {
             $parts[] = "{$key}:{$base[$key]}";

@@ -151,14 +151,30 @@ final class Cvss4
         'MSA' => ['S', 'H', 'L', 'N'],
     ];
 
+    /**
+     * The BASE score: threat (E) and environmental metrics the vector may
+     * carry are ignored, as with the v2/v3 base scores. score() rates the
+     * vector as written.
+     */
     public static function baseScore(string $vector): ?float
     {
         $m = self::parse($vector);
         if ($m === null) {
             return null;
         }
+        foreach (array_keys(self::MODIFIER_VALUES) as $key) {
+            $m[$key] = 'X';
+        }
 
         return self::score($m);
+    }
+
+    /** The score for the vector as written — threat and environmental metrics included. */
+    public static function vectorScore(string $vector): ?float
+    {
+        $m = self::parse($vector);
+
+        return $m === null ? null : self::score($m);
     }
 
     /**
@@ -168,7 +184,7 @@ final class Cvss4
      * for sensitive data, exactly as with v3.
      *
      * @param  array<string, string>  $modifiers  e.g. ['MAV' => 'L', 'CR' => 'H', 'E' => 'P']; 'X' entries are ignored
-     * @return array{score: float, vector: string}|null  null when the base vector doesn't parse OR a modifier value is invalid
+     * @return array{score: float, vector: string}|null null when the base vector doesn't parse OR a modifier value is invalid
      */
     public static function environmental(string $vector, array $modifiers): ?array
     {

@@ -24,6 +24,8 @@ final class VulnChange
         public readonly string $vulnId,
         public readonly array $changes,
         public readonly array $details,
+        public readonly VulnerabilityData $previous,
+        public readonly VulnerabilityData $current,
     ) {}
 
     public static function between(VulnerabilityData $previous, VulnerabilityData $current): self
@@ -116,7 +118,7 @@ final class VulnChange
             $changes[] = ChangeType::MetadataUpdated;
         }
 
-        return new self($current->vulnId, $changes, $details);
+        return new self($current->vulnId, $changes, $details, $previous, $current);
     }
 
     /** The heaviest impact among all detected changes. */

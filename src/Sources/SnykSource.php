@@ -10,6 +10,8 @@ use Gumslone\Vulns\Severity as SeverityLevel;
 use Gumslone\Vulns\Support\PurlBuilder;
 use GuzzleHttp\Client;
 use GuzzleHttp\Pool;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * Snyk vulnerability database adapter (commercial, REST API).
@@ -21,10 +23,9 @@ class SnykSource extends AbstractSource
 {
     private const API_VERSION = '2024-10-15';
 
-
     private ?string $orgId;
 
-    public function __construct(private readonly PurlBuilder $purlBuilder, ?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(private readonly PurlBuilder $purlBuilder, ?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         $this->orgId = $this->config('org_id');
@@ -184,10 +185,9 @@ class SnykSource extends AbstractSource
             fixedVersions: array_values(array_unique($fixedVersions)),
             sourcePublishedAt: isset($attrs['created_at']) ? new \DateTime($attrs['created_at']) : null,
             sourceModifiedAt: isset($attrs['updated_at']) ? new \DateTime($attrs['updated_at']) : null,
-            sourceUrl: 'https://security.snyk.io/vuln/'.($attrs['key'] ?? ''),
+            sourceUrl: isset($attrs['key']) ? 'https://security.snyk.io/vuln/'.rawurlencode((string) $attrs['key']) : null,
             rawDataChecksum: hash('sha256', json_encode($issue)),
             extra: ['snyk_key' => $attrs['key'] ?? null, 'type' => $attrs['type'] ?? null],
         );
     }
-
 }

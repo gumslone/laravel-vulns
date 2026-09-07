@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Sources;
 
-use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
 use Gumslone\Vulns\Support\PurlBuilder;
 use GuzzleHttp\Client;
 use GuzzleHttp\Pool;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * Sonatype OSS Index adapter — the free component-report API.
@@ -27,7 +28,7 @@ class OssIndexSource extends AbstractSource
      */
     private const MAX_COORDINATES = 128;
 
-    public function __construct(private readonly PurlBuilder $purlBuilder, ?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(private readonly PurlBuilder $purlBuilder, ?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
 
@@ -215,7 +216,7 @@ class OssIndexSource extends AbstractSource
             affectedEcosystems: [$ecosystem],
             references: array_map(fn ($url) => ['type' => null, 'url' => $url], $references),
             cwes: $cwes,
-            sourceUrl: $vuln['reference'] ?? null,
+            sourceUrl: $vuln['reference'] ?? 'https://ossindex.sonatype.org/vulnerability/'.rawurlencode((string) $vulnId),
             rawDataChecksum: $this->checksum($vuln),
             extra: ['oss_index_id' => $vuln['id'] ?? null],
         );

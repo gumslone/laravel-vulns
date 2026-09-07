@@ -10,6 +10,8 @@ use Gumslone\Vulns\Severity as SeverityLevel;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Pool;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * GitHub Security Advisory Database adapter (GraphQL API).
@@ -59,8 +61,7 @@ class GitHubAdvisorySource extends AbstractSource
     }
     GRAPHQL;
 
-
-    public function __construct(?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         // A malformed "Bearer " header 401s even on public endpoints — only
@@ -387,10 +388,9 @@ class GitHubAdvisorySource extends AbstractSource
             fixedVersions: $fixedVersion ? [$fixedVersion] : [],
             sourcePublishedAt: isset($advisory['publishedAt']) ? new \DateTime($advisory['publishedAt']) : null,
             sourceModifiedAt: isset($advisory['updatedAt']) ? new \DateTime($advisory['updatedAt']) : null,
-            sourceUrl: $advisory['permalink'] ?? null,
+            sourceUrl: $advisory['permalink'] ?? (isset($advisory['ghsaId']) ? 'https://github.com/advisories/'.$advisory['ghsaId'] : null),
             rawDataChecksum: hash('sha256', json_encode($advisory)),
             extra: ['ghsa_id' => $advisory['ghsaId']],
         );
     }
-
 }

@@ -14,12 +14,13 @@ it('scores CVSS v4.0 vectors exactly like the FIRST reference calculator', funct
     'network high impact' => ['CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N', 9.3],
     'local low priv' => ['CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N', 8.5],
     'physical' => ['CVSS:4.0/AV:P/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N', 7.0],
-    'with unreported threat' => ['CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:U', 8.1],
+    'threat metric ignored by the base score' => ['CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:U', 9.3],
     'subsequent safety' => ['CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:N/SC:H/SI:S/SA:S', 7.2],
 ]);
 
 it('rejects malformed v4 vectors instead of guessing', function () {
-    expect(Cvss4::baseScore('CVSS:4.0/AV:N/AC:L'))->toBeNull()
+    expect(Cvss4::vectorScore('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:U'))->toBe(8.1)
+        ->and(Cvss4::baseScore('CVSS:4.0/AV:N/AC:L'))->toBeNull()
         ->and(Cvss4::baseScore('CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H'))->toBeNull()
         ->and(Cvss4::baseScore('garbage'))->toBeNull();
 });

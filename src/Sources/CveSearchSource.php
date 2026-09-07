@@ -4,15 +4,16 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Sources;
 
-use Gumslone\Vulns\Data\PackageData;
+use Gumslone\Vulns\Contracts\CpeLookup;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
-use Gumslone\Vulns\Contracts\CpeLookup;
 use Gumslone\Vulns\Support\CpeResolver;
 use Gumslone\Vulns\Support\ResolvesLookupCpe;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Pool;
+use Psr\Log\LoggerInterface;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * CVE-Search adapter — works against the public CIRCL instance
@@ -26,8 +27,7 @@ class CveSearchSource extends AbstractSource
 {
     use ResolvesLookupCpe;
 
-
-    public function __construct(private readonly CpeResolver $cpeResolver, private readonly ?CpeLookup $cpeLookup = null, ?Client $http = null, array $options = [], ?\Psr\Log\LoggerInterface $logger = null, ?\Psr\SimpleCache\CacheInterface $cache = null)
+    public function __construct(private readonly CpeResolver $cpeResolver, private readonly ?CpeLookup $cpeLookup = null, ?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
         $this->http = $http ?? $this->makeClient(
@@ -177,6 +177,8 @@ class CveSearchSource extends AbstractSource
 
         $cvssV3Score = null;
         $cvssV3Vector = null;
+        $cvssV4Score = null;
+        $cvssV4Vector = null;
         if (isset($item['cvss3'])) {
             $cvssV3Score = (float) $item['cvss3'];
             $cvssV3Vector = $item['cvss3-vector'] ?? null;
@@ -186,34 +188,26 @@ class CveSearchSource extends AbstractSource
             $metricSets = collect($cna['metrics'] ?? [])
                 ->concat(collect($item['containers']['adp'] ?? [])->flatMap(fn ($adp) => $adp['metrics'] ?? []));
 
-            // Prefer a real CVSS v3.x score for the v3 columns. v4 is only a
-            // score-based fallback (its 0-10 score maps to the same severity
-            // bands) — but its vector is NOT a v3.1 vector, so don't store it in
-            // the v3 vector field where downstream labels it CVSSv31.
+            // Each standard lands in its own column — a v4 vector is not a
+            // v3.1 vector, so it must never sit where downstream labels it
+            // CVSSv31.
             foreach ($metricSets as $metric) {
                 foreach (['cvssV3_1', 'cvssV3_0'] as $key) {
-                    if (isset($metric[$key]['baseScore'])) {
+                    if ($cvssV3Score === null && isset($metric[$key]['baseScore'])) {
                         $cvssV3Score = (float) $metric[$key]['baseScore'];
                         $cvssV3Vector = $metric[$key]['vectorString'] ?? null;
-                        break 2;
                     }
                 }
-            }
-
-            if ($cvssV3Score === null) {
-                foreach ($metricSets as $metric) {
-                    if (isset($metric['cvssV4_0']['baseScore'])) {
-                        $cvssV3Score = (float) $metric['cvssV4_0']['baseScore']; // score only; vector left null
-                        break;
-                    }
+                if ($cvssV4Score === null && isset($metric['cvssV4_0']['baseScore'])) {
+                    $cvssV4Score = (float) $metric['cvssV4_0']['baseScore'];
+                    $cvssV4Vector = $metric['cvssV4_0']['vectorString'] ?? null;
                 }
             }
         }
 
         $cvssV2Score = isset($item['cvss']) ? (float) $item['cvss'] : null;
 
-        $severity = $cvssV3Score !== null ? SeverityLevel::fromCvssScore($cvssV3Score)
-            : ($cvssV2Score !== null ? SeverityLevel::fromCvssScore($cvssV2Score) : SeverityLevel::Unknown);
+        $severity = SeverityLevel::fromCvssScore($cvssV4Score ?? $cvssV3Score ?? $cvssV2Score);
 
         $references = $item['references']
             ?? array_column($cna['references'] ?? [], 'url');
@@ -239,6 +233,8 @@ class CveSearchSource extends AbstractSource
             cvssV3Vector: $cvssV3Vector,
             cvssV2Score: $cvssV2Score,
             cvssV2Vector: $item['cvss-vector'] ?? null,
+            cvssV4Score: $cvssV4Score,
+            cvssV4Vector: $cvssV4Vector,
             references: array_map(fn ($url) => ['type' => null, 'url' => is_array($url) ? ($url['url'] ?? '') : $url], $references),
             cwes: array_values(array_unique($cwes)),
             sourcePublishedAt: $published ? new \DateTime($published) : null,

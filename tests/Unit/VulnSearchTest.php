@@ -1,9 +1,11 @@
 <?php
 
+use Gumslone\Vulns\ChangeType;
 use Gumslone\Vulns\Contracts\Source;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity;
+use Gumslone\Vulns\Sources\AbstractSource;
 use Gumslone\Vulns\Sources\OsvSource;
 use Gumslone\Vulns\VulnSearch;
 use GuzzleHttp\Client;
@@ -307,3 +309,116 @@ it('rejects an unknown source name instead of silently searching fewer feeds', f
     expect($search->availableSources())->toBe(['osv']);
     $search->only('nvdd');
 })->throws(InvalidArgumentException::class, 'Unknown vulnerability source(s): nvdd');
+
+it('lets a source\'s own vector and link beat another record\'s inferred ones in the merge', function () {
+    // EUVD publishes a bare 9.8 (vector inferred); NVD has the real vector for
+    // the same score. EUVD wins the merge by priority, NVD's vector still lands.
+    $euvd = new VulnerabilityData(vulnId: 'CVE-2030-20', source: 'euvd', cvssV3Score: 9.8, sourceUrl: '');
+    $nvd = new VulnerabilityData(vulnId: 'CVE-2030-20', source: 'nvd', cvssV3Score: 9.8,
+        cvssV3Vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H', sourceUrl: 'https://nvd.nist.gov/vuln/detail/CVE-2030-20');
+
+    $search = new VulnSearch([
+        fakeSource('euvd', ['pkg' => [$euvd]]),
+        fakeSource('nvd', ['pkg' => [$nvd]]),
+    ], priority: ['euvd', 'nvd']);
+    $merged = $search->search(new PackageData(name: 'pkg', version: '1.0', ecosystem: 'npm'))[0];
+
+    expect($merged->source)->toBe('euvd')
+        ->and($merged->cvssV3Vector)->toBe('CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H')
+        ->and($merged->isInferred('cvss_v3_vector'))->toBeFalse()
+        ->and($merged->sourceUrl)->toBe('https://nvd.nist.gov/vuln/detail/CVE-2030-20')
+        ->and($merged->isInferred('source_url'))->toBeFalse()
+        ->and($merged->extra['source_urls'])->toBe(['nvd' => 'https://nvd.nist.gov/vuln/detail/CVE-2030-20']);
+
+    // The base's score is authoritative: NVD's real vector for a DIFFERENT
+    // score must not be paired with EUVD's 9.8 — a representative vector is.
+    $euvd = new VulnerabilityData(vulnId: 'CVE-2030-22', source: 'euvd', cvssV3Score: 9.8);
+    $nvd = new VulnerabilityData(vulnId: 'CVE-2030-22', source: 'nvd', cvssV3Score: 8.1,
+        cvssV3Vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H');
+    $merged = (new VulnSearch([fakeSource('euvd', ['pkg' => [$euvd]]), fakeSource('nvd', ['pkg' => [$nvd]])], priority: ['euvd', 'nvd']))
+        ->search(new PackageData(name: 'pkg', version: '1.0', ecosystem: 'npm'))[0];
+    expect($merged->cvssV3Score)->toBe(9.8)
+        ->and($merged->cvssV3Vector)->toBe('CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H')
+        ->and($merged->isInferred('cvss_v3_vector'))->toBeTrue();
+
+    // A score computed from a source's own vector is that source's opinion.
+    $osv = new VulnerabilityData(vulnId: 'CVE-2030-23', source: 'osv', cvssV3Vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H');
+    $euvd = new VulnerabilityData(vulnId: 'CVE-2030-23', source: 'euvd', cvssV3Score: 9.8);
+    $merged = (new VulnSearch([fakeSource('osv', ['pkg' => [$osv]]), fakeSource('euvd', ['pkg' => [$euvd]])]))
+        ->search(new PackageData(name: 'pkg', version: '1.0', ecosystem: 'npm'))[0];
+    expect($merged->cvssV3Score)->toBe(8.8)
+        ->and($merged->cvssV3Vector)->toBe('CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H')
+        ->and($merged->inferredFields)->not->toContain('cvss_v3_vector');
+
+    // Nobody said "critical": a severity one record derived from its score
+    // yields to a stated rating, and a three-way merge keeps every link.
+    $bare = new VulnerabilityData(vulnId: 'CVE-2030-24', source: 'euvd', cvssV3Score: 9.8, sourceUrl: 'https://euvd.example/24');
+    $rated = new VulnerabilityData(vulnId: 'CVE-2030-24', source: 'nvd', severity: 'low', sourceUrl: 'https://nvd.example/24');
+    $third = new VulnerabilityData(vulnId: 'CVE-2030-24', source: 'github', sourceUrl: 'https://github.example/24');
+    $merged = (new VulnSearch([
+        fakeSource('euvd', ['pkg' => [$bare]]), fakeSource('nvd', ['pkg' => [$rated]]), fakeSource('github', ['pkg' => [$third]]),
+    ], priority: ['euvd', 'nvd', 'github']))->search(new PackageData(name: 'pkg', version: '1.0', ecosystem: 'npm'))[0];
+    expect($merged->severity)->toBe(Severity::Low)
+        ->and($merged->isInferred('severity'))->toBeFalse()
+        ->and(array_keys($merged->extra['source_urls']))->toEqualCanonicalizing(['euvd', 'nvd', 'github']);
+
+    // Two bare scores: the merged record still ends up with a (flagged) vector.
+    $a = new VulnerabilityData(vulnId: 'CVE-2030-21', source: 'euvd', cvssV3Score: 7.5);
+    $b = new VulnerabilityData(vulnId: 'CVE-2030-21', source: 'shodan_cvedb', cvssV3Score: 7.5);
+    $merged = (new VulnSearch([fakeSource('euvd', ['pkg' => [$a]]), fakeSource('shodan_cvedb', ['pkg' => [$b]])]))
+        ->search(new PackageData(name: 'pkg', version: '1.0', ecosystem: 'npm'))[0];
+    expect($merged->cvssV3Vector)->not->toBeNull()
+        ->and($merged->isInferred('cvss_v3_vector'))->toBeTrue()
+        ->and($merged->sourceUrl)->toBe('https://nvd.nist.gov/vuln/detail/CVE-2030-21');
+});
+
+it('returns the freshest record for an id with latest() and classifies a re-query with refresh()', function () {
+    $stored = new VulnerabilityData(vulnId: 'CVE-2030-30', source: 'osv', cvssV3Score: 5.0,
+        sourceModifiedAt: new DateTimeImmutable('2030-01-01'));
+    $osvNow = new VulnerabilityData(vulnId: 'CVE-2030-30', source: 'osv', cvssV3Score: 5.0, summary: 'old wording',
+        sourceModifiedAt: new DateTimeImmutable('2030-01-01'));
+    $nvdNow = new VulnerabilityData(vulnId: 'CVE-2030-30', source: 'nvd', cvssV3Score: 8.1, summary: 'rescored',
+        sourceModifiedAt: new DateTimeImmutable('2030-02-01'));
+
+    $search = new VulnSearch([
+        fakeSource('osv', ['pkg' => [$osvNow]]),
+        fakeSource('nvd', ['pkg' => [$nvdNow]]),
+        new class extends AbstractSource
+        {
+            public function name(): string
+            {
+                return 'snyk';
+            }
+
+            public function queryBatch(array $packages): array
+            {
+                return [];
+            }
+
+            public function fetchById(string $vulnId): ?VulnerabilityData
+            {
+                throw new RuntimeException('boom');
+            }
+        },
+    ]);
+
+    // Plain fetchById honours the trust order (OSV first) …
+    expect($search->fetchById('CVE-2030-30')->cvssV3Score)->toBe(5.0);
+
+    // … latest() lets the most recently modified record win, and lower-cases nothing away.
+    $latest = $search->latest('cve-2030-30');
+    expect($latest->cvssV3Score)->toBe(8.1)
+        ->and($latest->source)->toBe('nvd')
+        ->and($latest->summary)->toBe('rescored')
+        ->and($search->errors())->toHaveKey('snyk');   // propagated from the fresh copy
+
+    $change = $search->refresh($stored);
+    expect($change)->not->toBeNull()
+        ->and($change->isMajor())->toBeTrue()
+        ->and($change->has(ChangeType::ScoreIncreased))->toBeTrue()
+        ->and($change->current->cvssV3Score)->toBe(8.1)
+        ->and($change->previous)->toBe($stored);
+
+    expect($search->latest('CVE-2030-99'))->toBeNull()
+        ->and($search->refresh(new VulnerabilityData(vulnId: 'CVE-2030-99', source: 'x')))->toBeNull();
+});
