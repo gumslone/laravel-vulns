@@ -102,6 +102,15 @@ it('uses the temporal equation for temporal-only modifiers and the 3.0 formula f
 });
 
 it('takes only the other vector\'s temporal and/or environmental groups, dropping mine', function () {
+    // The README example: B has its own modifiers, A's replace them entirely.
+    $a = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/MAV:L/CR:L';
+    $b = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:U/RL:W/MAV:A/CR:H';
+    $c = CvssVector::parse($b)->withModifiersOf($a);
+    expect((string) $c)->toBe('CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:P/RL:O/CR:L/MAV:L')
+        ->and($c->baseScore())->toBe(9.6)
+        ->and($c->temporalScore())->toBe((new CvssCalculator)->temporalScore('CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H', ['E' => 'P', 'RL' => 'O']))
+        ->and($c->environmentalScore())->toBe((new CvssCalculator)->environmental('CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H', ['E' => 'P', 'RL' => 'O', 'MAV' => 'L', 'CR' => 'L'])['score']);
+
     $mine = CvssVector::parse(V3_CRITICAL.'/E:U/RL:T/CR:H/MAV:P');
     $theirs = 'CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:L/A:L/E:F/MAC:H';
 

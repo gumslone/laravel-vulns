@@ -526,9 +526,31 @@ $cvss->baseScore();                                  // 9.8
 $cvss->withTemporal(['E' => 'P', 'RL' => 'O'])->temporalScore();          // 8.8
 $cvss->withEnvironmental(['MAV' => 'L', 'CR' => 'L'])->environmentalScore();
 $cvss->merge($mine);            // this base + $mine's temporal/environmental overlaid (theirs win, mine kept where silent)
-$cvss->withModifiersOf($mine);  // this base + ONLY $mine's temporal/environmental (the advisory's own dropped)
+$cvss->withModifiersOf($mine);  // this base + ONLY $mine's temporal/environmental — this vector's own are REPLACED
 $cvss->withTemporalOf($mine);   // …just the temporal group; withEnvironmentalOf() just the environmental one
 $cvss->fill($mine);             // this base + only the modifiers this vector lacks
+```
+
+The common case — "take the temporal and environmental metrics from vector A
+and apply them to the base of vector B" — is `withModifiersOf()`. B keeps its
+base group only; whatever temporal/environmental metrics B carried are
+discarded, and if A has none the result is B's bare base:
+
+```php
+$a = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/MAV:L/CR:L';   // the modifiers you want
+$b = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:U/RL:W/MAV:A/CR:H';   // its own modifiers: replaced
+
+$c = CvssVector::parse($b)->withModifiersOf($a);
+(string) $c;              // "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:P/RL:O/CR:L/MAV:L"
+$c->baseScore();          // 9.6 — B's base, untouched
+$c->temporalScore();      // B's base × A's E/RL/RC
+$c->environmentalScore(); // B's base with A's MAV/CR applied
+```
+
+Scores are recomputed from the metrics — CVSS has no way to transplant a
+temporal or environmental *score* as a number, only the metrics that produce
+it. Both vectors must be the same major version (v3.0 and v3.1 mix; v3 and v4
+don't — the groups mean different things).
 (string) $cvss;           // canonical string, groups in specification order
 
 // On the record: modifiers go onto the vector, the base score field stays

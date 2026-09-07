@@ -388,10 +388,11 @@ final class CvssVector implements \Stringable
     }
 
     /**
-     * Take the other vector's temporal AND environmental groups wholesale
-     * on this base — this vector's own modifiers are dropped, including
-     * ones the other doesn't set. The strict form of merge(): "score MY
-     * advisory in THEIR environment", nothing of mine leaking through.
+     * "Take the temporal and environmental metrics from vector A and apply
+     * them to the base of vector B": B->withModifiersOf(A). This vector
+     * keeps ONLY its base group; every temporal / environmental metric it
+     * carried is replaced by the other's — including being cleared where
+     * the other sets none. The strict form of merge(), which overlays.
      */
     public function withModifiersOf(self|string $other): self
     {
@@ -400,7 +401,7 @@ final class CvssVector implements \Stringable
         return $this->withTemporalOf($other)->withEnvironmentalOf($other);
     }
 
-    /** This base and environmental group, the other's temporal group replacing mine wholesale. */
+    /** This base + environmental group; this vector's temporal group is REPLACED by the other's (cleared if it has none). */
     public function withTemporalOf(self|string $other): self
     {
         $other = $this->sibling($other, 'take the temporal group from');
@@ -408,7 +409,7 @@ final class CvssVector implements \Stringable
         return new self($this->version, array_diff_key($this->metrics, $this->temporal()) + $other->temporal());
     }
 
-    /** This base and temporal group, the other's environmental group replacing mine wholesale. */
+    /** This base + temporal group; this vector's environmental group is REPLACED by the other's (cleared if it has none). */
     public function withEnvironmentalOf(self|string $other): self
     {
         $other = $this->sibling($other, 'take the environmental group from');
