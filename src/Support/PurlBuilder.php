@@ -105,6 +105,9 @@ class PurlBuilder
         // type/namespace/name
         $parts = explode('/', $remainder, 3);
         $type = strtolower(array_shift($parts));
+        if ($parts === [] || $parts[count($parts) - 1] === '') {
+            throw new \InvalidArgumentException("Invalid purl '{$purl}': no package name after the type.");
+        }
         $name = rawurldecode(array_pop($parts));
         $namespace = $parts ? rawurldecode(implode('/', $parts)) : null;
 

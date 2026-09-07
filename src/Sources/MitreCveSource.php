@@ -39,17 +39,17 @@ class MitreCveSource extends AbstractSource
         return 'mitre';
     }
 
-    /**
-     * Always empty, without any HTTP traffic: there is no package search to
-     * call (see class docblock). Every input key is still present in the
-     * result so callers can attribute per-package outcomes uniformly.
-     */
     /** Id lookups only — no package search. */
     public function supports(PackageData $package): bool
     {
         return false;
     }
 
+    /**
+     * Always empty, without any HTTP traffic: there is no package search to
+     * call (see class docblock). Every input key is still present in the
+     * result so callers can attribute per-package outcomes uniformly.
+     */
     public function queryBatch(array $packages): array
     {
         return array_fill_keys(array_keys($packages), []);
@@ -195,11 +195,16 @@ class MitreCveSource extends AbstractSource
                 if (! is_array($other) || strtolower((string) ($other['type'] ?? '')) !== 'ssvc') {
                     continue;
                 }
-                $content = $other['content'] ?? [];
+                $content = is_array($other['content'] ?? null) ? $other['content'] : [];
                 $ssvc = [];
-                foreach ($content['options'] ?? [] as $option) {
-                    foreach ((array) $option as $point => $value) {
-                        $ssvc[strtolower(str_replace(' ', '_', trim((string) $point)))] = strtolower(trim((string) $value));
+                foreach (is_array($content['options'] ?? null) ? $content['options'] : [] as $option) {
+                    if (! is_array($option)) {
+                        continue;
+                    }
+                    foreach ($option as $point => $value) {
+                        if (is_string($point) && is_scalar($value)) {
+                            $ssvc[strtolower(str_replace(' ', '_', trim($point)))] = strtolower(trim((string) $value));
+                        }
                     }
                 }
                 foreach (['version', 'timestamp', 'role'] as $key) {

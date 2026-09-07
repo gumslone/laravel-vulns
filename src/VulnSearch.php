@@ -252,17 +252,22 @@ class VulnSearch
 
             // Which packages this source can look up at all — an unmapped
             // ecosystem, a purl-less package on a purl-keyed feed — so an
-            // empty answer can be told apart from "not covered".
-            $applicable = [];
-            foreach ($packages as $key => $package) {
-                if ($source instanceof AbstractSource && ! $source->supports($package)) {
-                    $this->coverage[$key]['skipped'][] = $source->name();
-                } else {
-                    $applicable[] = $key;
-                }
-            }
-
+            // empty answer can be told apart from "not covered". Inside the
+            // try: supports() may consult a curated CPE catalog, and a
+            // catalog outage is this source failing, not the search aborting.
+            $applicable = array_keys($packages);
             try {
+                if ($source instanceof AbstractSource) {
+                    $applicable = [];
+                    foreach ($packages as $key => $package) {
+                        if ($source->supports($package)) {
+                            $applicable[] = $key;
+                        } else {
+                            $this->coverage[$key]['skipped'][] = $source->name();
+                        }
+                    }
+                }
+
                 foreach ($source->queryBatch($packages) as $key => $vulns) {
                     if (array_key_exists($key, $results)) {
                         $results[$key] = array_merge($results[$key], $vulns);
@@ -273,8 +278,12 @@ class VulnSearch
                 }
             } catch (\Throwable $e) {
                 $this->errors[$source->name()] = $e->getMessage();
-                foreach ($applicable as $key) {
-                    $this->coverage[$key]['failed'][] = $source->name();
+                // Everything not already recorded as skipped failed — the
+                // throw may have come from supports() part-way through.
+                foreach (array_keys($packages) as $key) {
+                    if (! in_array($source->name(), $this->coverage[$key]['skipped'], true)) {
+                        $this->coverage[$key]['failed'][] = $source->name();
+                    }
                 }
             }
         }

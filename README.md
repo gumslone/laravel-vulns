@@ -525,14 +525,17 @@ $cvss = $v->cvss();                                  // or CvssVector::parse($st
 $cvss->baseScore();                                  // 9.8
 $cvss->withTemporal(['E' => 'P', 'RL' => 'O'])->temporalScore();          // 8.8
 $cvss->withEnvironmental(['MAV' => 'L', 'CR' => 'L'])->environmentalScore();
-$cvss->merge($mine);      // this base + $mine's temporal/environmental (theirs win)
-$cvss->fill($mine);       // this base + only the modifiers this vector lacks
+$cvss->merge($mine);            // this base + $mine's temporal/environmental overlaid (theirs win, mine kept where silent)
+$cvss->withModifiersOf($mine);  // this base + ONLY $mine's temporal/environmental (the advisory's own dropped)
+$cvss->withTemporalOf($mine);   // …just the temporal group; withEnvironmentalOf() just the environmental one
+$cvss->fill($mine);             // this base + only the modifiers this vector lacks
 (string) $cvss;           // canonical string, groups in specification order
 
 // On the record: modifiers go onto the vector, the base score field stays
 $adjusted = $v->withCvssModifiers(['E' => 'P', 'MAV' => 'L']);
 $adjusted->cvssV3Score;          // 9.8 — untouched
 $adjusted->adjustedCvssScore();  // the environmental score the vector now expresses
+$v->withCvssModifiersOf($myEnvironmentVector);  // the advisory's base, only YOUR modifiers
 ```
 
 Illegal metrics and cross-version merges throw (`InvalidArgumentException`)

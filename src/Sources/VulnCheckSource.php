@@ -46,6 +46,12 @@ class VulnCheckSource extends AbstractSource
             && (bool) $this->config('api_token');
     }
 
+    /** Id lookups only — no package search. */
+    public function supports(PackageData $package): bool
+    {
+        return false;
+    }
+
     /**
      * Always empty, without any HTTP traffic: the community-tier indexes are
      * queried by CVE id (`index/nist-nvd2?cve=...`), there is no package-
@@ -54,12 +60,6 @@ class VulnCheckSource extends AbstractSource
      * elsewhere via fetchById. Every input key is still present so callers
      * can attribute per-package outcomes uniformly.
      */
-    /** Id lookups only — no package search. */
-    public function supports(PackageData $package): bool
-    {
-        return false;
-    }
-
     public function queryBatch(array $packages): array
     {
         return array_fill_keys(array_keys($packages), []);

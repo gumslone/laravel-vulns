@@ -32,6 +32,22 @@ it('round-trips a record through toArray() and fromArray(), re-deriving what was
         ->and($restored->sourceModifiedAt?->format('Y-m-d H:i:s'))->toBe('2030-03-04 05:06:07')
         ->and($restored->changesSince($original)->hasChanges())->toBeFalse();
 
+    // Timezones survive: a UTC stamp must not be re-read in the app's zone.
+    $utc = new VulnerabilityData(vulnId: 'CVE-2030-42', source: 'nvd', sourceModifiedAt: new DateTimeImmutable('2030-03-04T05:06:07Z'));
+    $tz = date_default_timezone_get();
+    date_default_timezone_set('Europe/Berlin');
+    try {
+        expect(VulnerabilityData::fromArray($utc->toArray())->sourceModifiedAt?->getTimestamp())->toBe($utc->sourceModifiedAt->getTimestamp());
+    } finally {
+        date_default_timezone_set($tz);
+    }
+
+    // camelCase inferred_fields entries are normalised too, so a rehydrated
+    // representative vector never passes for a source's own.
+    $camel = VulnerabilityData::fromArray(['vulnId' => 'CVE-2030-43', 'source' => 'euvd', 'cvssV3Score' => 9.8,
+        'cvssV3Vector' => 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H', 'inferredFields' => ['cvssV3Vector']]);
+    expect($camel->isInferred('cvss_v3_vector'))->toBeTrue()->and($camel->reported('cvss_v3_vector'))->toBeNull();
+
     // camelCase keys (a JSON-serialised object) work too; vuln_id is required.
     expect(VulnerabilityData::fromArray(['vulnId' => 'CVE-2030-41', 'source' => 'nvd', 'cvssV3Score' => 9.8])->severity)->toBe(Severity::Critical)
         ->and(fn () => VulnerabilityData::fromArray(['source' => 'nvd']))->toThrow(InvalidArgumentException::class, 'vuln_id');
@@ -97,6 +113,9 @@ it('recommends the lowest fix at or above the current version, same major line f
         ->and(VersionRange::recommendedFix('1:4.17.20', $fixes))->toBe('3.10.2')  // uncomparable current → lowest fix
         ->and(VersionRange::recommendedFix('4.17.20', ['v4.17.21']))->toBe('v4.17.21')
         ->and(VersionRange::recommendedFix('4.17.20', ['2.x', 'latest']))->toBeNull()
+        ->and(VersionRange::recommendedFix('4.17.20', ['5']))->toBe('5')            // int-like keys must not crash
+        ->and(VersionRange::recommendedFix('4', ['5', '4.0.1']))->toBe('4.0.1')
+        ->and(VersionRange::recommendedFix('1.0.0', ['1.0']))->toBe('1.0')          // 1.0 is not below 1.0.0
         ->and(VersionRange::recommendedFix('4.17.20', []))->toBeNull();
 });
 
@@ -119,6 +138,20 @@ it('reports per-package coverage so "nothing found" can be told from "not covere
     ]);
 
     $results = $search->searchBatch(['a' => $mapped, 'b' => $unmapped]);
+
+    // A source whose supports() itself throws (a CPE catalog outage) is that
+    // source failing — never the whole search aborting.
+    $brokenSupports = new class('cat') extends FakeSource
+    {
+        public function supports(PackageData $package): bool
+        {
+            throw new RuntimeException('catalog down');
+        }
+    };
+    $partial = new VulnSearch([new FakeSource('osv'), $brokenSupports]);
+    expect($partial->searchBatch(['a' => $mapped]))->toBe(['a' => []])
+        ->and($partial->errors())->toBe(['cat' => 'catalog down'])
+        ->and($partial->coverage()['a']['failed'])->toBe(['cat']);
 
     expect($results)->toBe(['a' => [], 'b' => []])
         ->and($search->coverage()['a'])->toBe(['queried' => ['osv', 'picky'], 'skipped' => [], 'failed' => ['nvd']])

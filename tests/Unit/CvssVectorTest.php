@@ -101,10 +101,34 @@ it('uses the temporal equation for temporal-only modifiers and the 3.0 formula f
         ->and((new CvssCalculator)->baseScore((string) $v4))->toBe(9.3);
 });
 
+it('takes only the other vector\'s temporal and/or environmental groups, dropping mine', function () {
+    $mine = CvssVector::parse(V3_CRITICAL.'/E:U/RL:T/CR:H/MAV:P');
+    $theirs = 'CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:L/A:L/E:F/MAC:H';
+
+    $all = $mine->withModifiersOf($theirs);
+    expect($all->baseVector())->toBe(V3_CRITICAL)
+        ->and($all->temporal())->toBe(['E' => 'F'])              // RL:T gone — theirs has none
+        ->and($all->environmental())->toBe(['MAC' => 'H'])       // CR:H / MAV:P gone
+        ->and((string) $all)->toBe(V3_CRITICAL.'/E:F/MAC:H');
+
+    expect($mine->withTemporalOf($theirs)->temporal())->toBe(['E' => 'F'])
+        ->and($mine->withTemporalOf($theirs)->environmental())->toBe(['CR' => 'H', 'MAV' => 'P'])
+        ->and($mine->withEnvironmentalOf($theirs)->temporal())->toBe(['E' => 'U', 'RL' => 'T'])
+        ->and($mine->withEnvironmentalOf($theirs)->environmental())->toBe(['MAC' => 'H'])
+        // an other with no modifiers clears mine — unlike merge(), which would keep them
+        ->and($mine->withModifiersOf(V3_CRITICAL)->equals(V3_CRITICAL))->toBeTrue()
+        ->and($mine->merge(V3_CRITICAL)->equals($mine))->toBeTrue()
+        ->and(fn () => $mine->withModifiersOf(V4_CRITICAL))->toThrow(InvalidArgumentException::class, 'Cannot take modifiers from a CVSS v4.0 vector');
+
+    // v4 keeps its supplemental metrics through the swap.
+    $v4 = CvssVector::parse(V4_CRITICAL.'/E:U/MAV:P/U:Amber');
+    expect((string) $v4->withModifiersOf(V4_CRITICAL.'/E:P'))->toBe(V4_CRITICAL.'/E:P/U:Amber');
+});
+
 it('refuses to merge across CVSS versions and rejects illegal metrics loudly', function () {
     $v3 = CvssVector::parse(V3_CRITICAL);
 
-    expect(fn () => $v3->merge(V4_CRITICAL))->toThrow(InvalidArgumentException::class, 'v4.0')
+    expect(fn () => $v3->merge(V4_CRITICAL))->toThrow(InvalidArgumentException::class, "Cannot merge a CVSS v4.0 vector: its metric groups don't fit a v3.1 base.")
         ->and(fn () => $v3->withTemporal(['MAV' => 'L']))->toThrow(InvalidArgumentException::class, 'environmental')
         ->and(fn () => $v3->withEnvironmental(['E' => 'P']))->toThrow(InvalidArgumentException::class, 'temporal')
         ->and(fn () => $v3->with(['E' => 'Z']))->toThrow(InvalidArgumentException::class, "Illegal value 'Z'")

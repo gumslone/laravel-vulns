@@ -30,14 +30,13 @@ class SearchCommand extends Command
 
     public function handle(VulnSearch $search): int
     {
-        if ($this->option('source') !== []) {
-            $search = $search->only($this->option('source'));
-        }
-        if ($this->option('latest')) {
-            $search = $search->preferLatest();
-        }
-
         try {
+            if ($this->option('source') !== []) {
+                $search = $search->only($this->option('source'));
+            }
+            if ($this->option('latest')) {
+                $search = $search->preferLatest();
+            }
             $results = $search->searchAny((string) $this->argument('query'));
         } catch (\InvalidArgumentException $e) {
             $this->components->error($e->getMessage());
@@ -45,15 +44,19 @@ class SearchCommand extends Command
             return self::INVALID;
         }
 
-        foreach ($search->errors() as $source => $error) {
-            $this->components->warn("{$source}: {$error}");
+        // In JSON mode failures live in the document, so stdout stays
+        // parseable when piped; the exit code flags them either way.
+        if (! $this->option('json')) {
+            foreach ($search->errors() as $source => $error) {
+                $this->components->warn("{$source}: {$error}");
+            }
         }
 
         if ($this->option('json')) {
-            $this->line((string) json_encode(
-                array_map(fn (VulnerabilityData $v) => $v->toArray(), $results),
-                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES,
-            ));
+            $this->line((string) json_encode([
+                'results' => array_map(fn (VulnerabilityData $v) => $v->toArray(), $results),
+                'errors' => (object) $search->errors(),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         } elseif ($results === []) {
             $this->components->info($search->errors() === []
                 ? 'No advisories found.'

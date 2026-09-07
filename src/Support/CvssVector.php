@@ -13,7 +13,8 @@ namespace Gumslone\Vulns\Support;
  *   $v->baseScore();                                        // 9.8
  *   $v->withTemporal(['E' => 'P', 'RL' => 'O'])->temporalScore();   // 8.8
  *   $v->withEnvironmental(['MAV' => 'L', 'CR' => 'L'])->environmentalScore();
- *   $v->merge($theirs);          // my base, their temporal + environmental
+ *   $v->merge($theirs);          // my base, their temporal + environmental overlaid on mine
+ *   $v->withModifiersOf($theirs); // my base, ONLY their temporal + environmental
  *   (string) $v;                 // canonical vector string, groups in spec order
  *
  * The base group is the advisory's — it never changes through withTemporal /
@@ -367,11 +368,13 @@ final class CvssVector implements \Stringable
 
     /**
      * Merge two vectors of the same major version: keep this vector's base
-     * group and take the other's temporal + environmental metrics — the
+     * group and overlay the other's temporal + environmental metrics — the
      * other's win where both set one, this vector's remain where only it
      * does. With $keepBase = false the roles flip (the other's base, this
-     * vector's modifiers on top). Throws when the versions differ — a v3
-     * environmental group means nothing on a v4 base.
+     * vector's modifiers on top). To take the other's groups wholesale and
+     * drop mine, use withModifiersOf() / withTemporalOf() /
+     * withEnvironmentalOf(); to only fill what I lack, fill(). Throws when
+     * the versions differ — a v3 environmental group means nothing on a v4 base.
      */
     public function merge(self|string $other, bool $keepBase = true): self
     {
@@ -382,6 +385,35 @@ final class CvssVector implements \Stringable
 
         return new self($this->version, $this->group('base') + $this->supplemental()
             + $other->temporal() + $other->environmental() + $this->temporal() + $this->environmental());
+    }
+
+    /**
+     * Take the other vector's temporal AND environmental groups wholesale
+     * on this base — this vector's own modifiers are dropped, including
+     * ones the other doesn't set. The strict form of merge(): "score MY
+     * advisory in THEIR environment", nothing of mine leaking through.
+     */
+    public function withModifiersOf(self|string $other): self
+    {
+        $other = $this->sibling($other, 'take modifiers from');
+
+        return $this->withTemporalOf($other)->withEnvironmentalOf($other);
+    }
+
+    /** This base and environmental group, the other's temporal group replacing mine wholesale. */
+    public function withTemporalOf(self|string $other): self
+    {
+        $other = $this->sibling($other, 'take the temporal group from');
+
+        return new self($this->version, array_diff_key($this->metrics, $this->temporal()) + $other->temporal());
+    }
+
+    /** This base and temporal group, the other's environmental group replacing mine wholesale. */
+    public function withEnvironmentalOf(self|string $other): self
+    {
+        $other = $this->sibling($other, 'take the environmental group from');
+
+        return new self($this->version, array_diff_key($this->metrics, $this->environmental()) + $other->environmental());
     }
 
     /**
@@ -492,11 +524,11 @@ final class CvssVector implements \Stringable
     {
         $parsed = is_string($other) ? self::parse($other) : $other;
         if ($parsed === null) {
-            throw new \InvalidArgumentException("Cannot {$operation}: '{$other}' is not a valid CVSS vector.");
+            throw new \InvalidArgumentException(sprintf("Cannot %s '%s': not a valid CVSS vector.", $operation, $other));
         }
         if ($parsed->majorVersion() !== $this->majorVersion()) {
             throw new \InvalidArgumentException(sprintf(
-                'Cannot %s a CVSS v%s vector into a v%s one — the metric groups are not compatible.',
+                "Cannot %s a CVSS v%s vector: its metric groups don't fit a v%s base.",
                 $operation, $parsed->version(), $this->version,
             ));
         }

@@ -31,36 +31,50 @@ final class VersionRange
      */
     public static function recommendedFix(?string $version, array $fixedVersions): ?string
     {
+        // A list, not a map: PHP would turn a key like '5' into an int.
         $candidates = [];
         foreach ($fixedVersions as $fixed) {
             $comparable = Version::comparable((string) $fixed);
             if ($comparable !== null) {
-                $candidates[$comparable] = (string) $fixed;
+                $candidates[] = [$comparable, (string) $fixed];
             }
         }
         if ($candidates === []) {
             return null;
         }
-        uksort($candidates, 'version_compare');
+        usort($candidates, fn (array $a, array $b) => self::compare($a[0], $b[0]));
 
         $current = $version === null ? null : Version::comparable($version);
         if ($current === null) {
-            return reset($candidates);
+            return $candidates[0][1];
         }
 
         $major = explode('.', $current)[0];
-        foreach ($candidates as $comparable => $original) {
-            if (version_compare($comparable, $current, '>=') && explode('.', $comparable)[0] === $major) {
+        foreach ($candidates as [$comparable, $original]) {
+            if (self::compare($comparable, $current) >= 0 && explode('.', $comparable)[0] === $major) {
                 return $original;
             }
         }
-        foreach ($candidates as $comparable => $original) {
-            if (version_compare($comparable, $current, '>=')) {
+        foreach ($candidates as [$comparable, $original]) {
+            if (self::compare($comparable, $current) >= 0) {
                 return $original;
             }
         }
 
         return null;
+    }
+
+    /** version_compare with the shorter side zero-padded, so 1.0 equals 1.0.0. */
+    private static function compare(string $a, string $b): int
+    {
+        $pa = explode('.', $a);
+        $pb = explode('.', $b);
+        $length = max(count($pa), count($pb));
+
+        return version_compare(
+            implode('.', array_pad($pa, $length, '0')),
+            implode('.', array_pad($pb, $length, '0')),
+        );
     }
 
     /**

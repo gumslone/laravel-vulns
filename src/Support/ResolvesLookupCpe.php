@@ -16,11 +16,21 @@ use Gumslone\Vulns\Data\PackageData;
  */
 trait ResolvesLookupCpe
 {
+    /** @var \WeakMap<PackageData, ?string>|null */
+    private ?\WeakMap $resolvedCpes = null;
+
     protected function resolveLookupCpe(PackageData $package): ?string
     {
-        // An explicitly supplied CPE is the caller's intent — never override it.
-        return $package->cpe23
-            ?? $this->cpeLookup?->bestCpe23($package->purl, $package->version)
-            ?? $this->cpeResolver->resolveCpe23($package);
+        // Memoised per package object: supports() and queryBatch() both
+        // resolve, and the curated lookup may be a database round-trip.
+        $this->resolvedCpes ??= new \WeakMap;
+        if (! isset($this->resolvedCpes[$package])) {
+            // An explicitly supplied CPE is the caller's intent — never override it.
+            $this->resolvedCpes[$package] = $package->cpe23
+                ?? $this->cpeLookup?->bestCpe23($package->purl, $package->version)
+                ?? $this->cpeResolver->resolveCpe23($package);
+        }
+
+        return $this->resolvedCpes[$package];
     }
 }
