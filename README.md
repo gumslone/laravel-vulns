@@ -514,54 +514,118 @@ keep every source's link in `$v->extra['source_urls']`.
 
 ### Adjusting a score for your environment (vector merging)
 
-`CvssVector` (v2.0, v3.0, v3.1, v4.0) splits a vector into its base, temporal
-(v4: threat) and environmental groups. The base group is the advisory's and
-never changes — you adjust the other two and read the score each yields:
+A CVSS vector is three groups of metrics:
+
+| Group | What it says | v3 metrics | v4 metrics |
+|---|---|---|---|
+| **Base** | how bad the flaw is, as published by the advisory | `AV AC PR UI S C I A` | `AV AC AT PR UI VC VI VA SC SI SA` |
+| **Temporal** (v4: *threat*) | how real the threat is right now — exploit code, a patch | `E RL RC` | `E` |
+| **Environmental** | what it means *for you* — your deployment, your data | `CR IR AR` + `MAV MAC MPR MUI MS MC MI MA` | `CR IR AR` + `MAV … MSA` |
+
+`CvssVector` (v2.0, v3.0, v3.1, v4.0) keeps them apart. The base group is the
+advisory's and never changes; you set the other two and read the score each
+group yields.
+
+**Scenario 1 — an assessor adjusts an advisory for their own deployment.**
+`CVE-…` is a 9.8; there's only proof-of-concept code, an official fix exists,
+and in this deployment the component is reachable only locally by admins:
 
 ```php
 use Gumslone\Vulns\Support\CvssVector;
 
-$cvss = $v->cvss();                                  // or CvssVector::parse($string)
-$cvss->baseScore();                                  // 9.8
-$cvss->withTemporal(['E' => 'P', 'RL' => 'O'])->temporalScore();          // 8.8
-$cvss->withEnvironmental(['MAV' => 'L', 'CR' => 'L'])->environmentalScore();
-$cvss->merge($mine);            // this base + $mine's temporal/environmental overlaid (theirs win, mine kept where silent)
-$cvss->withModifiersOf($mine);  // this base + ONLY $mine's temporal/environmental — this vector's own are REPLACED
-$cvss->withTemporalOf($mine);   // …just the temporal group; withEnvironmentalOf() just the environmental one
-$cvss->fill($mine);             // this base + only the modifiers this vector lacks
+$advisory = CvssVector::parse('CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H');
+$advisory->baseScore();                                    // 9.8
+
+$now = $advisory->withTemporal(['E' => 'P', 'RL' => 'O', 'RC' => 'C']);
+$now->temporalScore();                                     // 8.8  — PoC only, fix available
+
+$here = $now->withEnvironmental(['MAV' => 'L', 'MPR' => 'H', 'CR' => 'L']);
+$here->environmentalScore();                               // 5.8  — local, admin-only, low confidentiality need
+$here->baseScore();                                        // 9.8  — still the advisory's number
+$here->score();                                            // 5.8  — "the score this vector expresses"
+(string) $here;
+// "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/RC:C/CR:L/MAV:L/MPR:H"
 ```
 
-The common case — "take the temporal and environmental metrics from vector A
-and apply them to the base of vector B" — is `withModifiersOf()`. B keeps its
-base group only; whatever temporal/environmental metrics B carried are
-discarded, and if A has none the result is B's bare base:
+Set a metric to `X` (or `null`) to unset it again; an illegal value or an
+unknown metric throws instead of silently scoring as something else.
+
+**Scenario 2 — you have two vector strings: take the temporal + environmental
+metrics from A and put them on the base of B.** Typical when your environment
+profile lives in one vector and the advisory in another — or when the
+advisory (B) already carries somebody else's modifiers that you want replaced
+with yours (A):
 
 ```php
-$a = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/MAV:L/CR:L';   // the modifiers you want
-$b = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:U/RL:W/MAV:A/CR:H';   // its own modifiers: replaced
+$a = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/RL:O/MAV:L/CR:L';  // A: the modifiers you want
+$b = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:U/RL:W/MAV:A/CR:H';  // B: the base you want; its own modifiers go
 
 $c = CvssVector::parse($b)->withModifiersOf($a);
+
 (string) $c;              // "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:P/RL:O/CR:L/MAV:L"
+                          //  └── B's base ─────────────────────────────┘ └── A's modifiers ──┘
 $c->baseScore();          // 9.6 — B's base, untouched
-$c->temporalScore();      // B's base × A's E/RL/RC
-$c->environmentalScore(); // B's base with A's MAV/CR applied
+$c->temporalScore();      // 8.6 — B's base × A's E:P/RL:O
+$c->environmentalScore(); // 7.6 — B's base in A's environment (was 7.9 with B's own MAV:A/CR:H)
 ```
 
-Scores are recomputed from the metrics — CVSS has no way to transplant a
-temporal or environmental *score* as a number, only the metrics that produce
-it. Both vectors must be the same major version (v3.0 and v3.1 mix; v3 and v4
-don't — the groups mean different things).
-(string) $cvss;           // canonical string, groups in specification order
+B's `E:U/RL:W/MAV:A/CR:H` are gone entirely — *replaced*, not combined. That
+holds metric by metric: if A had no `RL`, C would have no `RL` either, and if
+A carries no modifiers at all, C is B's bare base. To move one group only:
 
-// On the record: modifiers go onto the vector, the base score field stays
-$adjusted = $v->withCvssModifiers(['E' => 'P', 'MAV' => 'L']);
-$adjusted->cvssV3Score;          // 9.8 — untouched
-$adjusted->adjustedCvssScore();  // the environmental score the vector now expresses
-$v->withCvssModifiersOf($myEnvironmentVector);  // the advisory's base, only YOUR modifiers
+```php
+CvssVector::parse($b)->withTemporalOf($a);       // …/E:P/RL:O/CR:H/MAV:A  — A's temporal, B's own environmental kept
+CvssVector::parse($b)->withEnvironmentalOf($a);  // …/E:U/RL:W/CR:L/MAV:L  — B's own temporal kept, A's environmental
 ```
 
-Illegal metrics and cross-version merges throw (`InvalidArgumentException`)
-rather than silently scoring as something else; `X` / `ND` unsets a modifier.
+**The three ways to combine, side by side.** Same B, and an A that sets `E:P`
+and `MAV:L` but no `RL`:
+
+```php
+$a = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/MAV:L';
+$b = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:U/RL:W/MAV:A/CR:H';
+$B = CvssVector::parse($b);
+
+$B->withModifiersOf($a);  // …/E:P/MAV:L               only A's modifiers — B's RL:W and CR:H dropped
+$B->merge($a);            // …/E:P/RL:W/CR:H/MAV:L     overlay: A wins where both set one, B keeps the rest
+$B->fill($a);             // …/E:U/RL:W/CR:H/MAV:A     gaps only: B keeps everything, A adds only what B lacked (nothing here)
+```
+
+| | B's base | metrics both set (`E`, `MAV`) | metrics only B sets (`RL`, `CR`) | metrics only A sets |
+|---|---|---|---|---|
+| `withModifiersOf($a)` | kept | A's | **dropped** | A's |
+| `merge($a)` | kept | A's | B's | A's |
+| `fill($a)` | kept | B's | B's | A's |
+
+`merge($a, keepBase: false)` flips the roles (A's base, B's modifiers on top).
+
+**Rules that apply to all of them.** Scores are always recomputed from the
+metrics — CVSS has no way to carry a temporal or environmental *score* over as
+a number, only the metrics that produce it. Both vectors must share a major
+version: v3.0 and v3.1 mix (the result keeps the base's prefix), v3 and v4
+don't — a v3 environmental group means nothing on a v4 base, so that throws
+`InvalidArgumentException`. In v4 the "temporal" group is the single threat
+metric `E`, and the base's supplemental metrics (`S AU R V RE U`) pass through:
+
+```php
+$v4 = CvssVector::parse('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N');
+$v4->baseScore();                                   // 9.3
+$v4->withTemporal(['E' => 'P'])->score();           // 8.9
+$v4->with(['E' => 'U', 'MAV' => 'L'])->score();     // 6.1
+```
+
+**On a vulnerability record** the same operations act on the record's own
+vector; the stored base score field is never rewritten, the adjusted figure is
+read separately:
+
+```php
+$adjusted = $vuln->withCvssModifiers(['E' => 'P', 'MAV' => 'L']);   // metrics onto the record's vector
+$adjusted->cvssV3Score;             // 9.8 — the advisory's base score, untouched
+$adjusted->adjustedCvssScore();     // what the vector now expresses (environmental here)
+$adjusted->cvss();                  // the CvssVector, for the individual scores
+
+$vuln->withCvssModifiersOf($myEnvironmentVector);   // the advisory's base + ONLY your modifiers
+```
 
 ### Does it actually affect my version?
 

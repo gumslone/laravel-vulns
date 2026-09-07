@@ -134,6 +134,30 @@ it('takes only the other vector\'s temporal and/or environmental groups, droppin
     expect((string) $v4->withModifiersOf(V4_CRITICAL.'/E:P'))->toBe(V4_CRITICAL.'/E:P/U:Amber');
 });
 
+it('matches the README walkthrough numbers', function () {
+    $advisory = CvssVector::parse(V3_CRITICAL);
+    $now = $advisory->withTemporal(['E' => 'P', 'RL' => 'O', 'RC' => 'C']);
+    $here = $now->withEnvironmental(['MAV' => 'L', 'MPR' => 'H', 'CR' => 'L']);
+    expect($now->temporalScore())->toBe(8.8)
+        ->and($here->environmentalScore())->toBe(5.8)
+        ->and($here->baseScore())->toBe(9.8)
+        ->and($here->score())->toBe(5.8)
+        ->and((string) $here)->toBe(V3_CRITICAL.'/E:P/RL:O/RC:C/CR:L/MAV:L/MPR:H');
+
+    $b = CvssVector::parse('CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H/E:U/RL:W/MAV:A/CR:H');
+    $a = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P/MAV:L';
+    expect($b->environmentalScore())->toBe(7.9)
+        ->and((string) $b->withModifiersOf($a))->toEndWith('/A:H/E:P/MAV:L')
+        ->and((string) $b->merge($a))->toEndWith('/A:H/E:P/RL:W/CR:H/MAV:L')
+        ->and((string) $b->fill($a))->toEndWith('/A:H/E:U/RL:W/CR:H/MAV:A')
+        ->and($b->withModifiersOf(V3_CRITICAL.'/E:P/RL:O/MAV:L/CR:L')->environmentalScore())->toBe(7.6)
+        ->and($b->withModifiersOf(V3_CRITICAL.'/E:P/RL:O/MAV:L/CR:L')->temporalScore())->toBe(8.6);
+
+    $v4 = CvssVector::parse(V4_CRITICAL);
+    expect($v4->withTemporal(['E' => 'P'])->score())->toBe(8.9)
+        ->and($v4->with(['E' => 'U', 'MAV' => 'L'])->score())->toBe(6.1);
+});
+
 it('refuses to merge across CVSS versions and rejects illegal metrics loudly', function () {
     $v3 = CvssVector::parse(V3_CRITICAL);
 
