@@ -405,6 +405,10 @@ class OsvSource extends AbstractSource
             'cargo' => 'crates.io',
             'gem' => 'RubyGems',
             'cocoapods' => 'CocoaPods',
+            'pub' => 'Pub',
+            'hex' => 'Hex',
+            'swift' => 'SwiftURL',
+            'conan' => 'ConanCenter',
             // Unknown ecosystems must NOT be guessed: one invalid ecosystem
             // 400s the entire querybatch, losing OSV for every package in it.
             default => null,

@@ -34,6 +34,9 @@ class GitHubAdvisorySource extends AbstractSource
         'cargo' => 'RUST',
         'gem' => 'RUBYGEMS',
         'cocoapods' => 'SWIFT', // closest supported; CocoaPods itself is unsupported
+        'swift' => 'SWIFT',
+        'pub' => 'PUB',
+        'hex' => 'ERLANG',
     ];
 
     private const VULNERABILITIES_QUERY = <<<'GRAPHQL'

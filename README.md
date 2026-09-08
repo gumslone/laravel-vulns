@@ -296,7 +296,7 @@ $one   = $nvd->fetchById('CVE-2021-44228');         // single advisory
 
 | Source | Queried by | Needs | Notes |
 |---|---|---|---|
-| `OsvSource` | ecosystem + name + version; **purl** (deb/apk/rpm); **git commit** | — | Batch endpoint, pagination, payload cache. Unmapped ecosystems are skipped, not guessed. |
+| `OsvSource` | ecosystem + name + version; **purl** (deb/apk/rpm); **git commit** | — | Batch endpoint, pagination, payload cache. Ecosystems: composer, npm, pypi, maven, nuget, go, cargo, gem, cocoapods, pub, hex, swift, conan (+ deb/apk/rpm by purl). Unmapped ecosystems are skipped, not guessed. |
 | `NvdSource` | **CPE** | `api_key` recommended | 5 req/30s anonymous, 50/30s with a key — the source throttles itself. Parses `configurations` into real version ranges. |
 | `CveSearchSource` | **CPE** | — | CIRCL; records often carry no version data (treat as undeterminable). |
 | `GitHubAdvisorySource` | ecosystem + name (registry); **owner/repo** (repository advisories) | `token` for the registry feed | Repository advisories work **without** a token — they cover projects that are in no registry database. |

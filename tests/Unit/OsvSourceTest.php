@@ -1,7 +1,9 @@
 <?php
 
 use Gumslone\Vulns\Data\PackageData;
+use Gumslone\Vulns\Severity;
 use Gumslone\Vulns\Sources\OsvSource;
+use Gumslone\Vulns\Support\ArrayCache;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Handler\MockHandler;
@@ -16,7 +18,7 @@ function makeOsvSource(array $responses, array &$history): OsvSource
     $stack = HandlerStack::create($mock);
     $stack->push(Middleware::history($history));
 
-    return new OsvSource(new Client(['handler' => $stack]), cache: new Gumslone\Vulns\Support\ArrayCache);
+    return new OsvSource(new Client(['handler' => $stack]), cache: new ArrayCache);
 }
 
 function osvVulnResponse(string $id, string $summary = 'A vulnerability'): Response
@@ -137,7 +139,7 @@ it('derives severity and CVSS score from an OSV CVSS vector string', function ()
     ]);
 
     $vuln = $results[0][0];
-    expect($vuln->severity)->toBe(Gumslone\Vulns\Severity::Critical)
+    expect($vuln->severity)->toBe(Severity::Critical)
         ->and((float) $vuln->cvssV3Score)->toBe(9.8);
 });
 
@@ -165,7 +167,7 @@ it('scores a v4-only advisory from its CVSS:4.0 vector', function () {
     expect($vuln->cvssV4Score)->toBe(9.3)
         ->and($vuln->cvssV4Vector)->toContain('CVSS:4.0')
         ->and($vuln->cvssV3Score)->toBeNull()
-        ->and($vuln->severity)->toBe(Gumslone\Vulns\Severity::Critical)
+        ->and($vuln->severity)->toBe(Severity::Critical)
         ->and($vuln->effectiveCvssScore())->toBe(9.3);
 });
 
@@ -378,7 +380,6 @@ it('prefers version coordinates over a commit when both are known', function () 
         ->and($body)->not->toHaveKey('commit');
 });
 
-
 it('skips unmapped-ecosystem packages instead of 400ing the whole querybatch', function () {
     $history = [];
     $source = makeOsvSource([
@@ -408,4 +409,15 @@ it('queries a VERSIONED unmapped-ecosystem package by commit when one is pinned'
 
     $body = json_decode((string) $history[0]['request']->getBody(), true);
     expect($body['queries'][0])->toBe(['commit' => 'aaaabbbbccccddddeeeeffff0000111122223333']);
+});
+
+it('maps the Dart, Elixir, Swift and Conan ecosystems OSV indexes, and still refuses to guess unknown ones', function () {
+    $source = new OsvSource;
+    $supports = fn (string $ecosystem) => $source->supports(new PackageData(name: 'x', version: '1.0', ecosystem: $ecosystem));
+
+    expect($supports('pub'))->toBeTrue()
+        ->and($supports('hex'))->toBeTrue()
+        ->and($supports('swift'))->toBeTrue()
+        ->and($supports('conan'))->toBeTrue()
+        ->and($supports('nonesuch'))->toBeFalse();
 });
