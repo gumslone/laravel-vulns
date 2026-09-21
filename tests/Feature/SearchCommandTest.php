@@ -37,12 +37,6 @@ it('exits non-zero when a source failed or the query is unrecognisable', functio
         ->expectsOutputToContain('inconclusive')
         ->assertFailed();
 
-    // --json stays parseable when a source failed: warnings go to stderr,
-    // the failure is embedded in the document.
-    expect(Artisan::call('vulns:search', ['query' => 'pkg:npm/lodash@4.17.20', '--json' => true]))->toBe(1);
-    $json = json_decode(Artisan::output(), true);
-    expect($json)->not->toBeNull()->and($json['errors'])->toBe(['nvd' => '503 Service Unavailable']);
-
     $this->artisan('vulns:search', ['query' => 'what is this'])
         ->expectsOutputToContain('Unrecognised query')
         ->assertExitCode(2);
@@ -54,4 +48,15 @@ it('exits non-zero when a source failed or the query is unrecognisable', functio
     $this->artisan('vulns:search', ['query' => 'pkg:npm'])
         ->expectsOutputToContain('no package name')
         ->assertExitCode(2);
+});
+
+// Its own test: on older Laravel 11 releases Artisan::output() comes back empty
+// once $this->artisan() has mocked the console within the same test.
+it('keeps --json parseable when a source failed', function () {
+    bindSearch([new FakeSource('osv'), (new FakeSource('nvd'))->failing('503 Service Unavailable')]);
+
+    // Warnings stay out of stdout; the failure is embedded in the document.
+    expect(Artisan::call('vulns:search', ['query' => 'pkg:npm/lodash@4.17.20', '--json' => true]))->toBe(1);
+    $json = json_decode(Artisan::output(), true);
+    expect($json)->not->toBeNull()->and($json['errors'])->toBe(['nvd' => '503 Service Unavailable']);
 });
