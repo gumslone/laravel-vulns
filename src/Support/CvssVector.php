@@ -75,6 +75,17 @@ final class CvssVector implements \Stringable
     private const CASING = ['CLEAR' => 'Clear', 'GREEN' => 'Green', 'AMBER' => 'Amber', 'RED' => 'Red'];
 
     /**
+     * Legal values per metric for a version family ('3.x' | '4.0') — the one
+     * table every parser in this package validates against.
+     *
+     * @return array<string, string[]>
+     */
+    public static function legalValues(string $family): array
+    {
+        return self::VALUES[$family] ?? [];
+    }
+
+    /**
      * @param  array<string, string>  $metrics  uppercase key => uppercase value, base group complete
      */
     private function __construct(
@@ -105,13 +116,20 @@ final class CvssVector implements \Stringable
         $body = preg_replace('/^CVSS:\d\.\d\//i', '', $vector) ?? $vector;
         $family = self::family($version);
         $metrics = [];
-        foreach (explode('/', $body) as $part) {
+        $seen = [];
+        foreach (explode('/', rtrim($body, '/')) as $part) {
             if (! str_contains($part, ':')) {
                 return null;
             }
             [$key, $value] = explode(':', $part, 2);
             $key = strtoupper(trim($key));
             $value = strtoupper(trim($value));
+            // A repeated metric is invalid per the specification — "last one
+            // wins" would let a trailing /AV:P quietly rescore the vector.
+            if (isset($seen[$key])) {
+                return null;
+            }
+            $seen[$key] = true;
             if (! isset(self::VALUES[$family][$key])) {
                 continue;
             }

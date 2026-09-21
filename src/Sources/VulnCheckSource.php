@@ -110,9 +110,9 @@ class VulnCheckSource extends AbstractSource
 
         $description = collect($cve['descriptions'] ?? [])->firstWhere('lang', 'en')['value'] ?? null;
 
-        [$v3Score, $v3Vector] = $this->extractCvss($cve['metrics'] ?? [], ['cvssMetricV31', 'cvssMetricV30']);
-        [$v2Score, $v2Vector] = $this->extractCvss($cve['metrics'] ?? [], ['cvssMetricV2']);
-        [$v4Score, $v4Vector] = $this->extractCvss($cve['metrics'] ?? [], ['cvssMetricV40']);
+        [$v3Score, $v3Vector] = $this->cvssMetric($cve['metrics'] ?? [], ['cvssMetricV31', 'cvssMetricV30']);
+        [$v2Score, $v2Vector] = $this->cvssMetric($cve['metrics'] ?? [], ['cvssMetricV2']);
+        [$v4Score, $v4Vector] = $this->cvssMetric($cve['metrics'] ?? [], ['cvssMetricV40']);
 
         $bestScore = $v4Score ?? $v3Score ?? $v2Score;
 
@@ -160,15 +160,4 @@ class VulnCheckSource extends AbstractSource
      * @param  string[]  $keys
      * @return array{0: ?float, 1: ?string}
      */
-    private function extractCvss(array $metrics, array $keys): array
-    {
-        foreach ($keys as $key) {
-            $data = $metrics[$key][0]['cvssData'] ?? null;
-            if ($data) {
-                return [(float) $data['baseScore'], $data['vectorString'] ?? null];
-            }
-        }
-
-        return [null, null];
-    }
 }

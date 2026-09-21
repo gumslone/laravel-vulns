@@ -49,33 +49,42 @@ class CvssCalculator
      */
     public function parse(string $vector): ?array
     {
-        $vector = trim($vector);
+        $vector = rtrim(trim($vector, " \t()"), '/');
         $parts = explode('/', $vector);
 
-        // Optional "CVSS:3.x" prefix
-        if ($parts && str_starts_with($parts[0], 'CVSS:')) {
+        // Optional prefix — but only a 3.x one: "CVSS:3.2" does not exist and
+        // must not score as if it were 3.1.
+        if ($parts && stripos($parts[0], 'CVSS:') === 0) {
+            if (! preg_match('/^CVSS:3\.[01]$/i', $parts[0])) {
+                return null;
+            }
             array_shift($parts);
         }
 
+        // One table for every parser (CvssVector's): base metrics must be
+        // present, every known metric must carry a legal value ("C:Z" or
+        // "E:Z" yields null, not a silently mis-scored vector), and a
+        // repeated metric is malformed rather than "last one wins".
+        $legal = CvssVector::legalValues('3.x');
         $metrics = [];
         foreach ($parts as $part) {
             if (! str_contains($part, ':')) {
                 return null;
             }
             [$key, $value] = explode(':', $part, 2);
-            $metrics[strtoupper($key)] = strtoupper($value);
+            $key = strtoupper(trim($key));
+            $value = strtoupper(trim($value));
+            if (isset($metrics[$key])) {
+                return null;
+            }
+            if (isset($legal[$key]) && $value !== 'X' && ! in_array($value, $legal[$key], true)) {
+                return null;
+            }
+            $metrics[$key] = $value;
         }
 
-        // Every base metric must be present AND carry a valid value — an
-        // out-of-range value (e.g. "C:Z") must yield null, not a silently
-        // under-scored vector.
-        $allowed = [
-            'AV' => ['N', 'A', 'L', 'P'], 'AC' => ['L', 'H'], 'PR' => ['N', 'L', 'H'],
-            'UI' => ['N', 'R'], 'S' => ['U', 'C'],
-            'C' => ['H', 'L', 'N'], 'I' => ['H', 'L', 'N'], 'A' => ['H', 'L', 'N'],
-        ];
-        foreach ($allowed as $key => $valid) {
-            if (! isset($metrics[$key]) || ! in_array($metrics[$key], $valid, true)) {
+        foreach (self::BASE_METRICS as $key) {
+            if (! isset($metrics[$key]) || $metrics[$key] === 'X') {
                 return null;
             }
         }
@@ -125,9 +134,9 @@ class CvssCalculator
             return null;
         }
 
-        $modifiers = array_map('strtoupper', $modifiers);
+        $modifiers = $this->modifiers($modifiers);
 
-        return $this->roundUp($base * $this->temporalFactor($modifiers));
+        return $modifiers === null ? null : $this->roundUp($base * $this->temporalFactor($modifiers));
     }
 
     /**
@@ -156,12 +165,10 @@ class CvssCalculator
         }
         $version = CvssVector::versionOf($baseVector) ?? '3.1';
 
-        // Keys uppercase too, so 'mav' behaves the same on the v3 and v4
-        // paths instead of being silently ignored here.
-        $modifiers = array_change_key_case(
-            array_map('strtoupper', array_filter($modifiers, fn ($v) => $v !== null && $v !== '')),
-            CASE_UPPER,
-        );
+        $modifiers = $this->modifiers($modifiers);
+        if ($modifiers === null) {
+            return null;
+        }
 
         $get = fn (string $modified, string $baseKey) => (($modifiers[$modified] ?? 'X') !== 'X')
             ? $modifiers[$modified]
@@ -215,6 +222,39 @@ class CvssCalculator
             'score' => $score,
             'vector' => $this->buildEnvironmentalVector($base, $modifiers, $version),
         ];
+    }
+
+    /**
+     * Uppercased, validated v3 modifier map: "not defined" (null / '' / X)
+     * and unknown keys are dropped, and an illegal value makes the whole
+     * request invalid — a typo like E:Z must never score as "none", and a
+     * lowercase key behaves the same as on the v2 and v4 paths.
+     *
+     * @return array<string, string>|null
+     */
+    private function modifiers(array $modifiers): ?array
+    {
+        $legal = CvssVector::legalValues('3.x');
+        $applied = [];
+        foreach ($modifiers as $key => $value) {
+            if ($value === null) {
+                continue;
+            }
+            if (! is_scalar($value)) {
+                return null;
+            }
+            $key = strtoupper((string) $key);
+            $value = strtoupper(trim((string) $value));
+            if ($value === '' || $value === 'X' || ! isset($legal[$key]) || in_array($key, self::BASE_METRICS, true)) {
+                continue;
+            }
+            if (! in_array($value, $legal[$key], true)) {
+                return null;
+            }
+            $applied[$key] = $value;
+        }
+
+        return $applied;
     }
 
     /**

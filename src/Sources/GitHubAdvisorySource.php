@@ -57,7 +57,8 @@ class GitHubAdvisorySource extends AbstractSource
             identifiers { type value }
             references { url }
             cwes(first: 10) { nodes { cweId } }
-            cvss { score vectorString }
+            withdrawnAt
+            cvssSeverities { cvssV3 { score vectorString } cvssV4 { score vectorString } }
           }
         }
       }
@@ -264,7 +265,8 @@ class GitHubAdvisorySource extends AbstractSource
                     identifiers { type value }
                     references { url }
                     cwes(first: 10) { nodes { cweId } }
-                    cvss { score vectorString }
+                    withdrawnAt
+                    cvssSeverities { cvssV3 { score vectorString } cvssV4 { score vectorString } }
                   }
                 }
                 GRAPHQL,
@@ -361,9 +363,16 @@ class GitHubAdvisorySource extends AbstractSource
                 'identifiers' => $a['identifiers'] ?? [],
                 'references' => [['url' => $a['html_url'] ?? '']],
                 'cwes' => ['nodes' => array_map(fn ($c) => ['cweId' => $c['cwe_id'] ?? null], $a['cwes'] ?? [])],
-                'cvss' => [
-                    'score' => $a['cvss']['score'] ?? null,
-                    'vectorString' => $a['cvss']['vector_string'] ?? null,
+                'withdrawnAt' => $a['withdrawn_at'] ?? null,
+                'cvssSeverities' => [
+                    'cvssV3' => [
+                        'score' => $a['cvss_severities']['cvss_v3']['score'] ?? $a['cvss']['score'] ?? null,
+                        'vectorString' => $a['cvss_severities']['cvss_v3']['vector_string'] ?? $a['cvss']['vector_string'] ?? null,
+                    ],
+                    'cvssV4' => [
+                        'score' => $a['cvss_severities']['cvss_v4']['score'] ?? null,
+                        'vectorString' => $a['cvss_severities']['cvss_v4']['vector_string'] ?? null,
+                    ],
                 ],
             ], array_filter([
                 'range' => $range,
@@ -415,12 +424,17 @@ class GitHubAdvisorySource extends AbstractSource
         $cveId = collect($advisory['identifiers'] ?? [])->firstWhere('type', 'CVE')['value'] ?? null;
         $vulnId = $cveId ?? $advisory['ghsaId'];
 
-        $cvssScore = isset($advisory['cvss']['score']) && $advisory['cvss']['score'] > 0
-            ? (float) $advisory['cvss']['score']
-            : null;
+        // `cvssSeverities` carries both standards (the older single `cvss`
+        // field is deprecated and v3-only); a 0.0 score means "not scored".
+        // A vector filed under the wrong key is re-slotted by the DTO.
+        $v3 = $advisory['cvssSeverities']['cvssV3'] ?? $advisory['cvss'] ?? [];
+        $v4 = $advisory['cvssSeverities']['cvssV4'] ?? [];
+        $scoreOf = fn (array $cvss): ?float => isset($cvss['score']) && $cvss['score'] > 0 ? (float) $cvss['score'] : null;
+        $cvssScore = $scoreOf($v3);
+        $cvssV4Score = $scoreOf($v4);
 
-        $severity = $cvssScore !== null
-            ? SeverityLevel::fromCvssScore($cvssScore)
+        $severity = ($cvssV4Score ?? $cvssScore) !== null
+            ? SeverityLevel::fromCvssScore($cvssV4Score ?? $cvssScore)
             : SeverityLevel::fromLabel($advisory['severity'] ?? null);
 
         return new VulnerabilityData(
@@ -430,7 +444,10 @@ class GitHubAdvisorySource extends AbstractSource
             details: $advisory['description'] ?? null,
             severity: $severity,
             cvssV3Score: $cvssScore,
-            cvssV3Vector: $advisory['cvss']['vectorString'] ?? null,
+            cvssV3Vector: ($v3['vectorString'] ?? null) ?: null,
+            cvssV4Score: $cvssV4Score,
+            cvssV4Vector: ($v4['vectorString'] ?? null) ?: null,
+            isWithdrawn: ! empty($advisory['withdrawnAt']),
             aliases: array_values(array_diff($aliases, [$vulnId])),
             affectedRanges: $ranges,
             references: array_map(fn ($r) => ['type' => null, 'url' => $r['url'] ?? ''], $advisory['references'] ?? []),

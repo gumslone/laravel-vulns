@@ -54,12 +54,16 @@ final class Cvss2
         }
 
         $metrics = [];
-        foreach (explode('/', $vector) as $part) {
+        foreach (explode('/', rtrim($vector, '/')) as $part) {
             if (! str_contains($part, ':')) {
                 return null;
             }
             [$key, $value] = explode(':', $part, 2);
-            $metrics[strtoupper(trim($key))] = strtoupper(trim($value));
+            $key = strtoupper(trim($key));
+            if (isset($metrics[$key])) {
+                return null; // a repeated metric is invalid, never "last one wins"
+            }
+            $metrics[$key] = strtoupper(trim($value));
         }
 
         foreach (self::BASE_METRICS as $key) {

@@ -164,7 +164,12 @@ class SnykSource extends AbstractSource
         }
 
         // Prefer a CVE alias as the canonical ID, falling back to the Snyk key
-        $problems = $attrs['problems'] ?? [];
+        // `problems` mixes identifiers (CVE, GHSA) with weakness classes
+        // (CWE) — a CWE is not another name for this advisory.
+        $problems = array_filter((array) ($attrs['problems'] ?? []), 'is_array');
+        $isCwe = fn (array $p) => strcasecmp((string) ($p['source'] ?? ''), 'CWE') === 0 || str_starts_with(strtoupper((string) ($p['id'] ?? '')), 'CWE-');
+        $cwes = array_values(array_unique(array_filter(array_column(array_filter($problems, $isCwe), 'id'))));
+        $problems = array_values(array_filter($problems, fn (array $p) => ! $isCwe($p)));
         $aliases = array_values(array_filter(array_column($problems, 'id')));
         $cveId = collect($problems)->first(fn ($p) => ($p['source'] ?? '') === 'CVE')['id'] ?? null;
         $vulnId = $cveId ?? ($attrs['key'] ?? $issue['id'] ?? null);
@@ -193,6 +198,7 @@ class SnykSource extends AbstractSource
             aliases: array_values(array_diff($aliases, [$vulnId])),
             affectedEcosystems: [$package->ecosystem],
             references: [],
+            cwes: $cwes,
             isFixed: ! empty($fixedVersions),
             fixedVersions: array_values(array_unique($fixedVersions)),
             sourcePublishedAt: isset($attrs['created_at']) ? new \DateTime($attrs['created_at']) : null,

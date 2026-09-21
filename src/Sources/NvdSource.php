@@ -142,9 +142,9 @@ class NvdSource extends AbstractSource
 
         $description = collect($cve['descriptions'] ?? [])->firstWhere('lang', 'en')['value'] ?? null;
 
-        [$v3Score, $v3Vector] = $this->extractCvssV3($cve['metrics'] ?? []);
-        [$v2Score, $v2Vector] = $this->extractCvssV2($cve['metrics'] ?? []);
-        [$v4Score, $v4Vector] = $this->extractCvssV4($cve['metrics'] ?? []);
+        [$v3Score, $v3Vector] = $this->cvssMetric($cve['metrics'] ?? [], ['cvssMetricV31', 'cvssMetricV30']);
+        [$v2Score, $v2Vector] = $this->cvssMetric($cve['metrics'] ?? [], ['cvssMetricV2']);
+        [$v4Score, $v4Vector] = $this->cvssMetric($cve['metrics'] ?? [], ['cvssMetricV40']);
 
         $bestScore = $v4Score ?? $v3Score ?? $v2Score;
         $severity = $bestScore !== null ? SeverityLevel::fromCvssScore($bestScore) : SeverityLevel::Unknown;
@@ -214,32 +214,6 @@ class NvdSource extends AbstractSource
         // below the bound and clear a vulnerable package. Only a provable
         // "outside every range" drops the CVE.
         return VersionRange::isVulnerable($package->version, $own ?: $ranges) !== false;
-    }
-
-    private function extractCvssV3(array $metrics): array
-    {
-        foreach (['cvssMetricV31', 'cvssMetricV30'] as $key) {
-            $data = $metrics[$key][0]['cvssData'] ?? null;
-            if ($data) {
-                return [(float) $data['baseScore'], $data['vectorString'] ?? null];
-            }
-        }
-
-        return [null, null];
-    }
-
-    private function extractCvssV2(array $metrics): array
-    {
-        $data = $metrics['cvssMetricV2'][0]['cvssData'] ?? null;
-
-        return $data ? [(float) $data['baseScore'], $data['vectorString'] ?? null] : [null, null];
-    }
-
-    private function extractCvssV4(array $metrics): array
-    {
-        $data = $metrics['cvssMetricV40'][0]['cvssData'] ?? null;
-
-        return $data ? [(float) $data['baseScore'], $data['vectorString'] ?? null] : [null, null];
     }
 
     private function isDisputed(array $cve, ?string $description): bool

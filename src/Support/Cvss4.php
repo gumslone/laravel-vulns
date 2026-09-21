@@ -326,7 +326,10 @@ final class Cvss4
 
         $value -= $existing > 0 ? $normalized / $existing : 0.0;
 
-        return round(max(0.0, min(10.0, $value)) * 10) / 10;
+        // The reference calculator nudges by 1e-6 before rounding: values that
+        // are exactly x.x5 on paper arrive as x.x4999… in binary floating
+        // point and would otherwise land 0.1 low.
+        return round((max(0.0, min(10.0, $value)) + 1e-6) * 10) / 10;
     }
 
     /**
@@ -337,21 +340,35 @@ final class Cvss4
      */
     private static function parse(string $vector): ?array
     {
-        $vector = trim($vector, " \t()");
-        if (! str_starts_with($vector, 'CVSS:4.0/')) {
+        $vector = rtrim(trim($vector, " \t()"), '/');
+        if (stripos($vector, 'CVSS:4.0/') !== 0) {
             return null;
         }
 
+        // Validated against the same table CvssVector uses, so the two entry
+        // points can't disagree: an illegal value (AV:Z, a v3 "UI:R", E:Z)
+        // or a repeated metric is a malformed vector — never scored as a
+        // neighbouring level.
+        $legal = CvssVector::legalValues('4.0');
         $metrics = [];
         foreach (explode('/', substr($vector, 9)) as $part) {
-            if (str_contains($part, ':')) {
-                [$key, $val] = explode(':', $part, 2);
-                $metrics[strtoupper($key)] = strtoupper($val);
+            if (! str_contains($part, ':')) {
+                return null;
             }
+            [$key, $val] = explode(':', $part, 2);
+            $key = strtoupper(trim($key));
+            $val = strtoupper(trim($val));
+            if (isset($metrics[$key])) {
+                return null;
+            }
+            if (isset($legal[$key]) && $val !== 'X' && ! in_array($val, $legal[$key], true)) {
+                return null;
+            }
+            $metrics[$key] = $val;
         }
 
         foreach (['AV', 'AC', 'AT', 'PR', 'UI', 'VC', 'VI', 'VA', 'SC', 'SI', 'SA'] as $required) {
-            if (! isset($metrics[$required])) {
+            if (! isset($metrics[$required]) || $metrics[$required] === 'X') {
                 return null;
             }
         }

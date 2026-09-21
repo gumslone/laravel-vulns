@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.18.0
+
+### CVSS
+- v4.0 scores that are exactly x.x5 round up like the FIRST reference calculator
+  (they arrived as x.x4999… and landed 0.1 low — 522 base vectors, none across a
+  severity band).
+- One validation table for every parser (`CvssVector`, `CvssCalculator`, `Cvss4`,
+  `Cvss2`): an illegal value (`AV:Z`, a v3 `UI:R` in a v4 vector, `E:Z`), a
+  repeated metric or a `CVSS:3.2` prefix is a malformed vector everywhere —
+  **previously some paths scored them**. Case and a trailing slash are tolerated
+  everywhere.
+- v3 temporal/environmental modifiers are validated: a typo returns `null` instead
+  of scoring 0.0 with a PHP warning; lowercase keys work as on v2/v4.
+- A CVSS score outside 0.0–10.0 is discarded by `VulnerabilityData`.
+
+### Security
+- `VulnerabilityData` allow-lists links: `references` entries and `sourceUrl` must
+  be absolute http(s)/ftp URLs — `javascript:` / `data:` links relayed by a feed are
+  dropped at construction (`VulnerabilityData::isSafeUrl()`).
+
+### Sources
+- NVD / VulnCheck prefer the `Primary` CVSS assessment over a CNA's `Secondary`.
+- GitHub reads `cvssSeverities` (v3 **and** v4; the single `cvss` field is
+  deprecated) and `withdrawnAt` → `isWithdrawn`.
+- Snyk files `CWE-…` problems under `cwes` instead of `aliases`.
+
 ## 1.17.0
 
 A correctness release: every item below either reported a vulnerable package

@@ -520,6 +520,16 @@ same record. EPSS and KEV are stamped after the merge by the threat enricher
 (see above), and `$fresh->changesSince($stored)` classifies what a re-query
 changed — including landing in KEV or crossing the EPSS triage threshold.
 
+### Safe to render
+
+Feeds relay whatever a reporter typed, so the record cleans up once, at
+construction, rather than at every render site: `references` and `sourceUrl`
+only ever hold absolute `http(s)` / `ftp` URLs (a `javascript:` or `data:`
+link is dropped; `sourceUrl` then falls back to the advisory's canonical page),
+ids and aliases are trimmed, de-duplicated and in official casing, and a CVSS
+score outside 0.0–10.0 is discarded. `VulnerabilityData::isSafeUrl()` is the
+same check for URLs you hold elsewhere.
+
 ### CVSS: a score always has its vector
 
 Feeds are inconsistent here — EUVD, Snyk, Shodan and Red Hat often publish a

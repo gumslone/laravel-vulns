@@ -68,4 +68,29 @@ trait BuildsCpeRanges
 
         return $ranges;
     }
+
+    /**
+     * [score, vector] from NVD-shaped `metrics`. A CVE can carry several
+     * assessments per standard — NVD's own ("Primary") and a CNA's
+     * ("Secondary"), in no guaranteed order — so the Primary one is
+     * preferred and the first listed is only the fallback.
+     *
+     * @param  string[]  $keys  metric lists to try in order, e.g. ['cvssMetricV31', 'cvssMetricV30']
+     * @return array{0: float|null, 1: string|null}
+     */
+    protected function cvssMetric(array $metrics, array $keys): array
+    {
+        foreach ($keys as $key) {
+            $entries = array_values(array_filter((array) ($metrics[$key] ?? []), fn ($m) => is_array($m) && isset($m['cvssData']['baseScore'])));
+            if ($entries === []) {
+                continue;
+            }
+            $primary = array_values(array_filter($entries, fn (array $m) => strcasecmp((string) ($m['type'] ?? ''), 'Primary') === 0));
+            $data = ($primary[0] ?? $entries[0])['cvssData'];
+
+            return [(float) $data['baseScore'], $data['vectorString'] ?? null];
+        }
+
+        return [null, null];
+    }
 }
