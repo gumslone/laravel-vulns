@@ -129,7 +129,7 @@ final class Version
         if (! preg_match('/^(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?$/', $version, $m)) {
             return null;
         }
-        if (! isset($m[2]) || $m[2] === '') {
+        if (! isset($m[2])) {
             return [$m[1], []];
         }
 

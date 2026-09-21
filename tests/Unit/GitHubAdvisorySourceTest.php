@@ -153,7 +153,7 @@ it('finds repository-level advisories for github-ecosystem packages via REST', f
     ], $history);
 
     $results = $source->queryBatch([
-        0 => Gumslone\Vulns\Data\PackageData::fromArray(['name' => 'gumslone/GumCP', 'version' => '2.5.0', 'ecosystem' => 'github']),
+        0 => PackageData::fromArray(['name' => 'gumslone/GumCP', 'version' => '2.5.0', 'ecosystem' => 'github']),
     ]);
 
     expect($history[0]['request']->getUri()->getPath())->toBe('/repos/gumslone/GumCP/security-advisories')
@@ -176,7 +176,7 @@ it('treats a repo-advisory request failure as empty, not fatal', function () {
 
     // 4xx surfaces as a Guzzle exception with http_errors on — must yield [].
     $results = $source->queryBatch([
-        0 => Gumslone\Vulns\Data\PackageData::fromArray(['name' => 'ghost/none', 'version' => null, 'ecosystem' => 'github']),
+        0 => PackageData::fromArray(['name' => 'ghost/none', 'version' => null, 'ecosystem' => 'github']),
     ]);
 
     expect($results[0])->toBe([]);

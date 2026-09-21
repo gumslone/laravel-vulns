@@ -70,6 +70,16 @@ class EuvdSource extends AbstractSource
         $itemsByProduct = array_fill_keys(array_keys($keysByProduct), []);
 
         $pending = array_fill_keys(array_keys($keysByProduct), 0);
+        // Product-level lookups answered recently come from the cache (see
+        // AbstractSource::cachedLookup) — only complete answers are stored.
+        $truncated = [];
+        foreach (array_keys($pending) as $lookup) {
+            if (($cached = $this->cachedLookup('euvd|'.$lookup)) !== null) {
+                $itemsByProduct[$lookup] = $cached;
+                unset($pending[$lookup]);
+            }
+        }
+        $fetched = array_keys($pending);
         while ($pending !== []) {
             $next = [];
             $requests = function () use ($pending, $pageSize) {
@@ -82,7 +92,7 @@ class EuvdSource extends AbstractSource
 
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
-                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$next, &$failed, &$firstReason, $pending, $keysByProduct, $pageSize, $maxPages) {
+                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$next, &$failed, &$firstReason, &$truncated, $pending, $keysByProduct, $pageSize, $maxPages) {
                     $data = json_decode($response->getBody()->getContents(), true);
 
                     // A 200 whose body isn't the expected JSON (the SPA's HTML
@@ -105,6 +115,7 @@ class EuvdSource extends AbstractSource
                         return;
                     }
                     if ($maxPages <= $pending[$product] + 1) {
+                        $truncated[$product] = true;
                         $this->warn(
                             sprintf('results for "%s" truncated at %d of %s records (max_pages=%d)', $product, count($itemsByProduct[$product]), $total ?? 'unknown', $maxPages),
                             [], $keysByProduct[$product],
@@ -134,6 +145,12 @@ class EuvdSource extends AbstractSource
             throw new \RuntimeException(sprintf(
                 'EUVD: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
+        }
+
+        foreach ($fetched as $lookup) {
+            if (! isset($truncated[$lookup])) {
+                $this->cacheLookup('euvd|'.$lookup, $itemsByProduct[$lookup]);
+            }
         }
 
         foreach ($itemsByProduct as $product => $items) {

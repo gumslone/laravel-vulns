@@ -1,6 +1,7 @@
 <?php
 
 use Gumslone\Vulns\Data\PackageData;
+use Gumslone\Vulns\Severity;
 use Gumslone\Vulns\Sources\RedHatSource;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
@@ -78,7 +79,7 @@ it('maps a cve.json entry to the normalised DTO', function () {
     $vuln = $results[0][0];
     expect($vuln->vulnId)->toBe('CVE-2024-1234')
         ->and($vuln->source)->toBe('redhat')
-        ->and($vuln->severity)->toBe(Gumslone\Vulns\Severity::High) // Red Hat "important"
+        ->and($vuln->severity)->toBe(Severity::High) // Red Hat "important"
         ->and($vuln->cvssV3Score)->toBe(8.1)
         ->and($vuln->cvssV3Vector)->toBe('CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H')
         ->and($vuln->summary)->toBe('CVE-2024-1234 kernel: out-of-bounds write')
@@ -110,7 +111,7 @@ it('fetches a CVE detail document by id, uppercased and percent-encoded', functi
 
     expect($history[0]['request']->getUri()->getPath())->toBe('/hydra/rest/securitydata/cve/CVE-2024-1234.json')
         ->and($vuln?->vulnId)->toBe('CVE-2024-1234')
-        ->and($vuln->severity)->toBe(Gumslone\Vulns\Severity::Medium)
+        ->and($vuln->severity)->toBe(Severity::Medium)
         ->and($vuln->cvssV3Score)->toBe(6.5)
         ->and($vuln->summary)->toBe('CVE-2024-1234 kernel: out-of-bounds write');
 });

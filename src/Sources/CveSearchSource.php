@@ -85,6 +85,16 @@ class CveSearchSource extends AbstractSource
         // hundreds of rows — page 1 alone holds only the newest CVEs, and an
         // old installed version is affected by exactly the older ones).
         $pending = array_fill_keys(array_keys($keysByPath), 1);
+        // Product-level lookups answered recently come from the cache (see
+        // AbstractSource::cachedLookup) — only complete answers are stored.
+        $truncated = [];
+        foreach (array_keys($pending) as $lookup) {
+            if (($cached = $this->cachedLookup('cve_search|'.$perPage.'|'.$lookup)) !== null) {
+                $itemsByPath[$lookup] = $cached;
+                unset($pending[$lookup]);
+            }
+        }
+        $fetched = array_keys($pending);
         while ($pending !== []) {
             $next = [];
             $requests = function () use ($pending, $perPage) {
@@ -95,7 +105,7 @@ class CveSearchSource extends AbstractSource
 
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
-                'fulfilled' => function ($response, $path) use (&$itemsByPath, &$next, &$failed, &$firstReason, $pending, $perPage, $maxPages, $keysByPath) {
+                'fulfilled' => function ($response, $path) use (&$itemsByPath, &$next, &$failed, &$firstReason, &$truncated, $pending, $perPage, $maxPages, $keysByPath) {
                     $data = json_decode($response->getBody()->getContents(), true);
                     if (! is_array($data)) {
                         $failed++;
@@ -113,6 +123,7 @@ class CveSearchSource extends AbstractSource
                         return;
                     }
                     if ($pending[$path] >= $maxPages) {
+                        $truncated[$path] = true;
                         $this->warn(
                             sprintf('results for %s truncated at %d rows (max_pages=%d)', $path, count($itemsByPath[$path]), $maxPages),
                             [], $keysByPath[$path],
@@ -142,6 +153,12 @@ class CveSearchSource extends AbstractSource
             throw new \RuntimeException(sprintf(
                 'CVE-Search: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
+        }
+
+        foreach ($fetched as $lookup) {
+            if (! isset($truncated[$lookup])) {
+                $this->cacheLookup('cve_search|'.$perPage.'|'.$lookup, $itemsByPath[$lookup]);
+            }
         }
 
         foreach ($itemsByPath as $path => $items) {

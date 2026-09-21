@@ -8,12 +8,18 @@ on:
 
 jobs:
   test:
-    name: PHP ${{ matrix.php }}
+    name: PHP ${{ matrix.php }} · Laravel ${{ matrix.laravel }} · ${{ matrix.deps }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.2', '8.3', '8.4']
+        include:
+          - { php: '8.2', laravel: '11', testbench: '^9.0', deps: highest }
+          - { php: '8.3', laravel: '12', testbench: '^10.0', deps: highest }
+          - { php: '8.4', laravel: '13', testbench: '^11.0', deps: highest }
+          - { php: '8.5', laravel: '13', testbench: '^11.0', deps: highest }
+          # The oldest versions composer.json claims to support must work too.
+          - { php: '8.2', laravel: '11', testbench: '^9.0', deps: lowest }
 
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +32,35 @@ jobs:
           coverage: none
 
       - name: Install dependencies
-        run: composer update --prefer-dist --no-interaction --no-progress
+        run: |
+          flags="--prefer-dist --no-interaction --no-progress"
+          if [ "${{ matrix.deps }}" = "lowest" ]; then flags="$flags --prefer-lowest --prefer-stable"; fi
+          composer update $flags --with "orchestra/testbench:${{ matrix.testbench }}"
 
       - name: Test
         run: vendor/bin/pest
+
+  quality:
+    name: Static analysis & code style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: curl, json, mbstring
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-interaction --no-progress
+
+      - name: PHPStan
+        run: vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+
+      - name: Pint
+        run: vendor/bin/pint --test
+
+      - name: Audit dependencies
+        run: composer audit --no-dev

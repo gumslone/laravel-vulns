@@ -9,12 +9,13 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
+use Psr\SimpleCache\CacheInterface;
 
 /**
  * PSR-16 stub as strict as Symfony's Psr16Cache: any key containing a
  * reserved character ({}()/\@:) throws instead of being stored.
  */
-function strictPsr16(): Psr\SimpleCache\CacheInterface
+function strictPsr16(): CacheInterface
 {
     return new class extends ArrayCache
     {
@@ -25,7 +26,7 @@ function strictPsr16(): Psr\SimpleCache\CacheInterface
             return parent::get($key, $default);
         }
 
-        public function set(string $key, mixed $value, null|int|\DateInterval $ttl = null): bool
+        public function set(string $key, mixed $value, null|int|DateInterval $ttl = null): bool
         {
             $this->assertLegalKey($key);
 
@@ -49,7 +50,7 @@ function strictPsr16(): Psr\SimpleCache\CacheInterface
         private function assertLegalKey(string $key): void
         {
             if (preg_match('#[{}()/\\\\@:]#', $key)) {
-                throw new class("PSR-16 reserved character in cache key: {$key}") extends \InvalidArgumentException implements \Psr\SimpleCache\InvalidArgumentException {};
+                throw new class("PSR-16 reserved character in cache key: {$key}") extends InvalidArgumentException implements Psr\SimpleCache\InvalidArgumentException {};
             }
         }
     };

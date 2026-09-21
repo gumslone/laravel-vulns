@@ -86,6 +86,16 @@ class ShodanCvedbSource extends AbstractSource
         $itemsByProduct = array_fill_keys(array_keys($keysByProduct), []);
 
         $pending = array_fill_keys(array_keys($keysByProduct), 0);
+        // Product-level lookups answered recently come from the cache (see
+        // AbstractSource::cachedLookup) — only complete answers are stored.
+        $truncated = [];
+        foreach (array_keys($pending) as $lookup) {
+            if (($cached = $this->cachedLookup('shodan|'.$lookup)) !== null) {
+                $itemsByProduct[$lookup] = $cached;
+                unset($pending[$lookup]);
+            }
+        }
+        $fetched = array_keys($pending);
         while ($pending !== []) {
             $next = [];
             $requests = function () use ($pending, $queryByProduct, $limit) {
@@ -98,7 +108,7 @@ class ShodanCvedbSource extends AbstractSource
 
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
-                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$next, &$failed, &$firstReason, $pending, $keysByProduct, $limit, $maxPages) {
+                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$next, &$failed, &$firstReason, &$truncated, $pending, $keysByProduct, $limit, $maxPages) {
                     $data = json_decode($response->getBody()->getContents(), true);
                     if (! is_array($data)) {
                         $failed++;
@@ -114,6 +124,7 @@ class ShodanCvedbSource extends AbstractSource
                         return; // a short page is the last one
                     }
                     if ($maxPages <= $pending[$product] + 1) {
+                        $truncated[$product] = true;
                         $this->warn(
                             sprintf('results for "%s" truncated at %d CVEs (max_pages=%d)', $product, count($itemsByProduct[$product]), $maxPages),
                             [], $keysByProduct[$product],
@@ -143,6 +154,12 @@ class ShodanCvedbSource extends AbstractSource
             throw new \RuntimeException(sprintf(
                 'Shodan CVEDB: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
+        }
+
+        foreach ($fetched as $lookup) {
+            if (! isset($truncated[$lookup])) {
+                $this->cacheLookup('shodan|'.$lookup, $itemsByProduct[$lookup]);
+            }
         }
 
         foreach ($itemsByProduct as $product => $items) {

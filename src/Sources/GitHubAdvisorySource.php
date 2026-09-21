@@ -181,10 +181,13 @@ class GitHubAdvisorySource extends AbstractSource
                     // leaves THIS package's lookup incomplete — on page 1 or
                     // page N alike. It is attributed to the package so it
                     // can't read as clean while the rest of the batch stands.
-                    if (! is_array($data) || ! empty($data['errors'])) {
-                        $graphqlErrors[$key] = is_array($data)
-                            ? (string) ($data['errors'][0]['type'] ?? ($data['errors'][0]['message'] ?? 'unknown GraphQL error'))
-                            : 'response was not valid JSON';
+                    $error = match (true) {
+                        ! is_array($data) => 'response was not valid JSON',
+                        ! empty($data['errors']) => (string) ($data['errors'][0]['type'] ?? ($data['errors'][0]['message'] ?? 'unknown GraphQL error')),
+                        default => null,
+                    };
+                    if ($error !== null) {
+                        $graphqlErrors[$key] = $error;
 
                         return;
                     }

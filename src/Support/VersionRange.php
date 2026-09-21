@@ -282,13 +282,9 @@ final class VersionRange
                 '>=' => $cmp >= 0,
                 '>' => $cmp > 0,
                 '<=' => $cmp <= 0,
-                '<' => $cmp < 0,
-                default => null,
+                default => $cmp < 0, // '<' — the clause regex admits nothing else
             };
 
-            if ($ok === null) {
-                return null;
-            }
             if ($ok === false) {
                 return false; // one clause fails → the AND fails
             }
@@ -353,16 +349,5 @@ final class VersionRange
     private static function normalise(string $version): string
     {
         return Version::normalize($version);
-    }
-
-    /**
-     * Only pure dotted-numeric versions (1, 1.2, 1.2.3.4) are safe to order with
-     * version_compare. Anything with a qualifier (RELEASE, Final, rc1),
-     * a Debian epoch (1:x), or other non-numeric text is treated as
-     * undeterminable so we never assert "not affected" on it.
-     */
-    private static function isComparable(string $version): bool
-    {
-        return Version::comparable($version) !== null;
     }
 }

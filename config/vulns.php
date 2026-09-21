@@ -45,6 +45,10 @@ return [
     */
     'version_filter' => env('VULNS_VERSION_FILTER', true),
 
+    // Dispatch Events\SourceFailed / Events\SearchCompleted through Laravel's
+    // event dispatcher (listen for them like any other event).
+    'events' => env('VULNS_EVENTS', true),
+
     /*
     |--------------------------------------------------------------------------
     | Threat enrichment
@@ -107,6 +111,8 @@ return [
         'enabled' => env('VULNS_NVD_ENABLED', true),
         'api_key' => env('NVD_API_KEY'),
         'base_url' => env('VULNS_NVD_URL', 'https://services.nvd.nist.gov/rest/json'),
+        // Product lookups are cached (complete answers only); 0 disables.
+        'result_cache_ttl' => (int) env('VULNS_NVD_RESULT_CACHE_TTL', 3600),
         // 5 requests/30s anonymous, 50/30s with a key.
         'rate_limit_window' => 30,
         'rate_limit_max' => env('VULNS_NVD_RATE_MAX'),
@@ -119,6 +125,7 @@ return [
         // Every page is walked; past this cap results are kept but the
         // truncation lands in errors() and coverage() ('failed').
         'max_pages' => (int) env('VULNS_CVE_SEARCH_MAX_PAGES', 20),
+        'result_cache_ttl' => (int) env('VULNS_CVE_SEARCH_RESULT_CACHE_TTL', 3600),
         // Self-hosted instances often use a private CA; set false to skip
         // certificate verification (public CIRCL should stay true).
         'verify_tls' => env('VULNS_CVE_SEARCH_VERIFY_TLS', true),
@@ -131,6 +138,7 @@ return [
         // HTML shell on /api/*, not the API.
         'base_url' => env('VULNS_EUVD_URL', 'https://euvdservices.enisa.europa.eu/api'),
         'max_pages' => (int) env('VULNS_EUVD_MAX_PAGES', 20), // × 100 records
+        'result_cache_ttl' => (int) env('VULNS_EUVD_RESULT_CACHE_TTL', 3600),
         'max_concurrency' => (int) env('VULNS_EUVD_CONCURRENCY', 8),
     ],
 
@@ -161,6 +169,7 @@ return [
         'base_url' => env('VULNS_REDHAT_URL', 'https://access.redhat.com/hydra/rest/securitydata'),
         'page_size' => (int) env('VULNS_REDHAT_PAGE_SIZE', 1000),
         'max_pages' => (int) env('VULNS_REDHAT_MAX_PAGES', 10),
+        'result_cache_ttl' => (int) env('VULNS_REDHAT_RESULT_CACHE_TTL', 3600),
         // The search is by RPM name alone, so it is only asked about OS-level
         // packages: for npm's `tar` the same name is different software.
         // ['*'] asks about every ecosystem.
@@ -175,6 +184,7 @@ return [
         'base_url' => env('VULNS_SHODAN_CVEDB_URL', 'https://cvedb.shodan.io'),
         'page_size' => (int) env('VULNS_SHODAN_CVEDB_PAGE_SIZE', 50),
         'max_pages' => (int) env('VULNS_SHODAN_CVEDB_MAX_PAGES', 20),
+        'result_cache_ttl' => (int) env('VULNS_SHODAN_CVEDB_RESULT_CACHE_TTL', 3600),
         'max_concurrency' => (int) env('VULNS_SHODAN_CVEDB_CONCURRENCY', 8),
     ],
 

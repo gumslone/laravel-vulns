@@ -4,7 +4,6 @@ use Gumslone\Vulns\ChangeImpact;
 use Gumslone\Vulns\ChangeType;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity;
-use Gumslone\Vulns\VulnChange;
 
 function snapshot(array $overrides = []): VulnerabilityData
 {

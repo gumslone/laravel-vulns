@@ -1,5 +1,6 @@
 <?php
 
+use Gumslone\Vulns\Contracts\Source;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Sources\ShodanCvedbSource;
@@ -79,9 +80,9 @@ it('converts a commit to a CPE when it carries forge coordinates', function () {
 });
 
 /** A by-name source stub: results keyed on PackageData->name or vuln id. */
-function anySearchSource(array $byName): \Gumslone\Vulns\Contracts\Source
+function anySearchSource(array $byName): Source
 {
-    return new class($byName) implements \Gumslone\Vulns\Contracts\Source
+    return new class($byName) implements Source
     {
         public function __construct(private array $byName) {}
 

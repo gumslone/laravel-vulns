@@ -1,6 +1,5 @@
 <?php
 
-
 it('walks through setup and writes entered credentials to .env', function () {
     $envFile = sys_get_temp_dir().'/vulns-install-test-'.uniqid().'.env';
     file_put_contents($envFile, "APP_NAME=demo\nNVD_API_KEY=old-key\n");

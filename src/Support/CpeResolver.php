@@ -55,7 +55,7 @@ class CpeResolver
     /**
      * Determine vendor from package namespace or known mappings.
      */
-    private function normaliseVendor(PackageData $pkg): ?string
+    private function normaliseVendor(PackageData $pkg): string
     {
         // Namespace is the best source of vendor info
         if ($pkg->namespace) {

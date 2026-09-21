@@ -151,6 +151,41 @@ abstract class AbstractSource implements Source
     }
 
     /**
+     * A cached lookup answer (decoded JSON / plain arrays only), or null.
+     * Lookup caching is opt-out per source via `result_cache_ttl` (seconds,
+     * 0 = off) and needs a PSR-16 cache; it spares rate-limited feeds the
+     * same product search for every version and every scan.
+     */
+    protected function cachedLookup(string $lookup): ?array
+    {
+        if ($this->cache === null || $this->lookupTtl() <= 0) {
+            return null;
+        }
+        $hit = $this->cache->get($this->lookupKey($lookup));
+
+        return is_array($hit) ? $hit : null;
+    }
+
+    /** Store a COMPLETE lookup answer — never a truncated or partially failed one. */
+    protected function cacheLookup(string $lookup, array $value): void
+    {
+        if ($this->cache !== null && $this->lookupTtl() > 0) {
+            $this->cache->set($this->lookupKey($lookup), $value, $this->lookupTtl());
+        }
+    }
+
+    private function lookupTtl(): int
+    {
+        return (int) $this->config('result_cache_ttl', 3600);
+    }
+
+    private function lookupKey(string $lookup): string
+    {
+        // '.' separators and a hash: PSR-16 reserves {}()/\@: in keys.
+        return 'vulns.'.$this->name().'.lookup.'.sha1($lookup);
+    }
+
+    /**
      * Decode a JSON response body, or throw: a 200 that isn't JSON (a proxy's
      * HTML error page, a truncated body) is a failed lookup, and reading it
      * as an empty result would report the package clean.

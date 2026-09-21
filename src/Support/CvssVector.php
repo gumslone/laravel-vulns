@@ -498,7 +498,7 @@ final class CvssVector implements \Stringable
             return match ($family) {
                 '2.0' => Cvss2::baseScore($base),
                 '3.x' => (new CvssCalculator)->baseScore($base),
-                '4.0' => Cvss4::baseScore($base),
+                default => Cvss4::baseScore($base),
             };
         }
 
@@ -511,7 +511,7 @@ final class CvssVector implements \Stringable
         return match ($family) {
             '2.0' => $environmental ? (Cvss2::environmental($base, $modifiers)['score'] ?? null) : Cvss2::temporalScore($base, $modifiers),
             '3.x' => $environmental ? ((new CvssCalculator)->environmental($base, $modifiers)['score'] ?? null) : (new CvssCalculator)->temporalScore($base, $modifiers),
-            '4.0' => Cvss4::environmental($base, $modifiers)['score'] ?? null, // v4 scores E natively
+            default => Cvss4::environmental($base, $modifiers)['score'] ?? null, // v4 scores E natively
         };
     }
 

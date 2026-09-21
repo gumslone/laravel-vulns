@@ -57,7 +57,8 @@ class OssIndexSource extends AbstractSource
     public function supports(PackageData $package): bool
     {
         return $package->version !== null
-            && ($package->purl ?? $this->purlBuilder->fromPackageArray($package->toArray())) !== null;
+            // toPurl() is null (never a throw) for coordinates no purl can express.
+            && $package->toPurl() !== null;
     }
 
     public function queryBatch(array $packages): array

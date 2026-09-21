@@ -3,10 +3,13 @@
 use Gumslone\Vulns\ChangeType;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
+use Gumslone\Vulns\Enrichment\ThreatEnricher;
 use Gumslone\Vulns\ExploitMaturity;
 use Gumslone\Vulns\Severity;
 use Gumslone\Vulns\Sources\MitreCveSource;
+use Gumslone\Vulns\Sources\NvdSource;
 use Gumslone\Vulns\Sources\OssIndexSource;
+use Gumslone\Vulns\Support\CpeResolver;
 use Gumslone\Vulns\Support\PurlBuilder;
 use Gumslone\Vulns\VulnSearch;
 use GuzzleHttp\Client;
@@ -28,7 +31,7 @@ function arrayCache(): CacheInterface
             return $this->store[$key] ?? $default;
         }
 
-        public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
+        public function set(string $key, mixed $value, DateInterval|int|null $ttl = null): bool
         {
             $this->store[$key] = $value;
 
@@ -59,7 +62,7 @@ function arrayCache(): CacheInterface
             return $out;
         }
 
-        public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
+        public function setMultiple(iterable $values, DateInterval|int|null $ttl = null): bool
         {
             foreach ($values as $k => $v) {
                 $this->set($k, $v, $ttl);
@@ -86,7 +89,7 @@ function arrayCache(): CacheInterface
 
 it('does not cache misses from a 200 with a garbage body — the outage lands in errors()', function () {
     $cache = arrayCache();
-    $enricher = new \Gumslone\Vulns\Enrichment\ThreatEnricher(
+    $enricher = new ThreatEnricher(
         new Client(['handler' => HandlerStack::create(new MockHandler([
             new Response(200, [], '<html>Service Temporarily Unavailable</html>'),
             new Response(200, [], '<html>Service Temporarily Unavailable</html>'),
@@ -103,7 +106,7 @@ it('does not cache misses from a 200 with a garbage body — the outage lands in
 });
 
 it('tolerates a malformed KEV date without discarding the rest of the enrichment', function () {
-    $enricher = new \Gumslone\Vulns\Enrichment\ThreatEnricher(
+    $enricher = new ThreatEnricher(
         new Client(['handler' => HandlerStack::create(new MockHandler([
             new Response(200, [], json_encode(['data' => [['cve' => 'CVE-2030-1', 'epss' => '0.5', 'percentile' => '0.9']]])),
             new Response(200, [], json_encode(['vulnerabilities' => [
@@ -121,8 +124,8 @@ it('tolerates a malformed KEV date without discarding the rest of the enrichment
 });
 
 it('reads NVD dispute markers from cveTags, not only description text', function () {
-    $source = new \Gumslone\Vulns\Sources\NvdSource(
-        new \Gumslone\Vulns\Support\CpeResolver,
+    $source = new NvdSource(
+        new CpeResolver,
         null,
         new Client(['handler' => HandlerStack::create(new MockHandler([
             new Response(200, [], json_encode(['vulnerabilities' => [['cve' => [

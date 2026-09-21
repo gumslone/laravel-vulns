@@ -52,6 +52,7 @@ class VulnSearch
         private readonly bool $preferLatest = false,
         private readonly ?ThreatEnricher $enricher = null,
         private readonly bool $filterByVersion = true,
+        private readonly ?\Closure $listener = null,
     ) {
         $this->priority = array_values(array_map('strtolower', $priority ?? self::DEFAULT_PRIORITY));
     }
@@ -83,7 +84,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => in_array($s->name(), $wanted, true),
-        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion);
+        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener);
     }
 
     /**
@@ -99,7 +100,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => ! in_array($s->name(), $unwanted, true),
-        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion);
+        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener);
     }
 
     /**
@@ -112,7 +113,7 @@ class VulnSearch
      */
     public function prioritize(string|array $names): self
     {
-        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher, $this->filterByVersion);
+        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener);
     }
 
     /**
@@ -123,7 +124,7 @@ class VulnSearch
      */
     public function preferLatest(bool $prefer = true): self
     {
-        return new self($this->sources, $this->priority, $prefer, $this->enricher, $this->filterByVersion);
+        return new self($this->sources, $this->priority, $prefer, $this->enricher, $this->filterByVersion, $this->listener);
     }
 
     /**
@@ -132,7 +133,7 @@ class VulnSearch
      */
     public function withEnricher(?ThreatEnricher $enricher): self
     {
-        return new self($this->sources, $this->priority, $this->preferLatest, $enricher, $this->filterByVersion);
+        return new self($this->sources, $this->priority, $this->preferLatest, $enricher, $this->filterByVersion, $this->listener);
     }
 
     /**
@@ -144,7 +145,33 @@ class VulnSearch
      */
     public function filterByVersion(bool $filter = true): self
     {
-        return new self($this->sources, $this->priority, $this->preferLatest, $this->enricher, $filter);
+        return new self($this->sources, $this->priority, $this->preferLatest, $this->enricher, $filter, $this->listener);
+    }
+
+    /**
+     * A copy that reports what happens to a listener: Events\SourceFailed for
+     * every source that threw or answered partially, Events\SearchCompleted
+     * (with the SearchReport) after each batch. The Laravel provider wires
+     * this to the event dispatcher; a listener's own exception never breaks
+     * a search.
+     *
+     * @param  callable(object): void|null  $listener
+     */
+    public function listen(?callable $listener): self
+    {
+        return new self(
+            $this->sources, $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion,
+            $listener === null ? null : $listener(...),
+        );
+    }
+
+    private function emit(object $event): void
+    {
+        try {
+            ($this->listener)?->__invoke($event);
+        } catch (\Throwable) {
+            // observers must not be able to fail a lookup
+        }
     }
 
     /**
@@ -299,12 +326,14 @@ class VulnSearch
                 if ($source instanceof AbstractSource && $source->warnings() !== []) {
                     $this->errors[$source->name()] = implode('; ', $source->warnings());
                     $incomplete = $source->incompleteKeys();
+                    $this->emit(new Events\SourceFailed($source->name(), $this->errors[$source->name()], partial: true));
                 }
                 foreach ($applicable as $key) {
                     $this->coverage[$key][in_array($key, $incomplete, true) ? 'failed' : 'queried'][] = $source->name();
                 }
             } catch (\Throwable $e) {
                 $this->errors[$source->name()] = $e->getMessage();
+                $this->emit(new Events\SourceFailed($source->name(), $e->getMessage()));
                 // Everything not already recorded as skipped failed — the
                 // throw may have come from supports() part-way through.
                 foreach (array_keys($packages) as $key) {
@@ -315,7 +344,12 @@ class VulnSearch
             }
         }
 
-        return $this->enrich(array_map($this->merge(...), $results));
+        $results = $this->enrich(array_map($this->merge(...), $results));
+        if ($this->listener !== null) {
+            $this->emit(new Events\SearchCompleted(new SearchReport($results, $this->errors, $this->coverage)));
+        }
+
+        return $results;
     }
 
     /**
@@ -409,6 +443,7 @@ class VulnSearch
             } catch (\Throwable $e) {
                 $this->errors[$source->name()] = $e->getMessage();
                 $this->coverage[$vulnId]['failed'][] = $source->name();
+                $this->emit(new Events\SourceFailed($source->name(), $e->getMessage()));
             }
         }
 

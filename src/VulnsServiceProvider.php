@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns;
 
+use Gumslone\Vulns\Console\AuditCommand;
 use Gumslone\Vulns\Console\InstallCommand;
 use Gumslone\Vulns\Console\SearchCommand;
 use Gumslone\Vulns\Contracts\CpeLookup;
@@ -104,6 +105,9 @@ class VulnsServiceProvider extends ServiceProvider
             config('vulns.merge', 'priority') === 'latest',
             $app->make(ThreatEnricher::class),
             (bool) config('vulns.version_filter', true),
+            // Events\SourceFailed / Events\SearchCompleted through the app's
+            // dispatcher — Event::listen(SourceFailed::class, …) just works.
+            config('vulns.events', true) ? fn (object $event) => $app['events']->dispatch($event) : null,
         ));
     }
 
@@ -113,7 +117,7 @@ class VulnsServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../config/vulns.php' => config_path('vulns.php'),
             ], 'vulns-config');
-            $this->commands([InstallCommand::class, SearchCommand::class]);
+            $this->commands([InstallCommand::class, SearchCommand::class, AuditCommand::class]);
         }
 
         // Opt-in single-page search UI (config vulns.ui) — enable only

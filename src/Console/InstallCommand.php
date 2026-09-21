@@ -85,7 +85,7 @@ class InstallCommand extends Command
      */
     private function writeEnv(array $env): void
     {
-        $path = $this->laravel->environmentFilePath();
+        $path = app()->environmentFilePath();
         $contents = is_file($path) ? (string) file_get_contents($path) : '';
 
         foreach ($env as $key => $value) {

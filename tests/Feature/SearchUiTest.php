@@ -4,7 +4,7 @@ use Gumslone\Vulns\Contracts\Source;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\VulnSearch;
-
+use Gumslone\Vulns\VulnsServiceProvider;
 
 function uiSearch(array $vulns, array $errors = []): VulnSearch
 {
@@ -48,7 +48,7 @@ it('is disabled by default — no route registered', function () {
 it('renders the search page and results when enabled', function () {
     config(['vulns.ui.enabled' => true, 'app.key' => 'base64:'.base64_encode(random_bytes(32))]);
     // Re-boot the provider so the route registers under the test config.
-    (new Gumslone\Vulns\VulnsServiceProvider(app()))->boot();
+    (new VulnsServiceProvider(app()))->boot();
 
     app()->instance(VulnSearch::class, uiSearch([
         new VulnerabilityData(
@@ -69,7 +69,7 @@ it('renders the search page and results when enabled', function () {
 
 it('shows a clear message for unrecognisable queries', function () {
     config(['vulns.ui.enabled' => true, 'app.key' => 'base64:'.base64_encode(random_bytes(32))]);
-    (new Gumslone\Vulns\VulnsServiceProvider(app()))->boot();
+    (new VulnsServiceProvider(app()))->boot();
     app()->instance(VulnSearch::class, uiSearch([]));
 
     $this->get('/vulns?q=what+even+is+this')
@@ -79,7 +79,7 @@ it('shows a clear message for unrecognisable queries', function () {
 
 it('marks empty results as inconclusive when a source failed', function () {
     config(['vulns.ui.enabled' => true, 'app.key' => 'base64:'.base64_encode(random_bytes(32))]);
-    (new Gumslone\Vulns\VulnsServiceProvider(app()))->boot();
+    (new VulnsServiceProvider(app()))->boot();
 
     // A search whose only source throws: empty results + errors() populated.
     $failing = new class implements Source
@@ -119,7 +119,7 @@ it('marks empty results as inconclusive when a source failed', function () {
 
 it('caps query length and never links javascript: source URLs', function () {
     config(['vulns.ui.enabled' => true, 'app.key' => 'base64:'.base64_encode(random_bytes(32))]);
-    (new Gumslone\Vulns\VulnsServiceProvider(app()))->boot();
+    (new VulnsServiceProvider(app()))->boot();
 
     app()->instance(VulnSearch::class, uiSearch([
         new VulnerabilityData(

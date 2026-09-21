@@ -1,6 +1,7 @@
 <?php
 
 use Gumslone\Vulns\Data\PackageData;
+use Gumslone\Vulns\Severity;
 use Gumslone\Vulns\Sources\OssIndexSource;
 use Gumslone\Vulns\Support\PurlBuilder;
 use GuzzleHttp\Handler\MockHandler;
@@ -84,7 +85,7 @@ it('maps a report vulnerability with a CVE and a CVSS:3.1 vector', function () {
     $vuln = $results[0][0];
     expect($vuln->vulnId)->toBe('CVE-2021-23337')
         ->and($vuln->source)->toBe('oss_index')
-        ->and($vuln->severity)->toBe(Gumslone\Vulns\Severity::Critical)
+        ->and($vuln->severity)->toBe(Severity::Critical)
         ->and($vuln->cvssV3Score)->toBe(9.8)
         ->and($vuln->cvssV3Vector)->toBe('CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H')
         ->and($vuln->summary)->toBe('[CVE-2021-23337] Command Injection in lodash')

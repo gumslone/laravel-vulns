@@ -1,6 +1,6 @@
 {
     "name": "gumslone/laravel-vulns",
-    "description": "Multi-source vulnerability lookups for PHP and Laravel: OSV, NVD, GitHub Advisories (registry + repository), EUVD, CVE-Search and Snyk behind one contract.",
+    "description": "Multi-source vulnerability lookups for PHP and Laravel — OSV, NVD, GitHub Advisories, MITRE, EUVD, CVE-Search, Red Hat, Shodan CVEDB, OSS Index, VulnCheck and Snyk behind one contract, with CVSS v2/v3/v4, EPSS/KEV enrichment, change detection and a self-audit command.",
     "keywords": [
         "vulnerability",
         "cve",
@@ -8,6 +8,13 @@
         "nvd",
         "sca",
         "security",
+        "cvss",
+        "epss",
+        "kev",
+        "ghsa",
+        "advisory",
+        "audit",
+        "sarif",
         "laravel"
     ],
     "homepage": "https://github.com/gumslone/laravel-vulns",
@@ -27,9 +34,11 @@
         "psr/simple-cache": "^2.0 || ^3.0"
     },
     "require-dev": {
-        "orchestra/testbench": "^9.0 || ^10.0",
+        "gumslone/laravel-package-url": "^1.2",
+        "laravel/pint": "^1.18",
+        "orchestra/testbench": "^9.0 || ^10.0 || ^11.0",
         "pestphp/pest": "^3.0",
-        "gumslone/laravel-package-url": "^1.2"
+        "phpstan/phpstan": "^2.0"
     },
     "autoload": {
         "psr-4": {
@@ -45,7 +54,10 @@
         "laravel": {
             "providers": [
                 "Gumslone\\Vulns\\VulnsServiceProvider"
-            ]
+            ],
+            "aliases": {
+                "Vulns": "Gumslone\\Vulns\\Facades\\Vulns"
+            }
         }
     },
     "config": {
@@ -55,7 +67,15 @@
         "sort-packages": true
     },
     "scripts": {
-        "test": "pest"
+        "test": "pest",
+        "analyse": "phpstan analyse --no-progress --memory-limit=1G",
+        "lint": "pint --test",
+        "fix": "pint",
+        "check": [
+            "@lint",
+            "@analyse",
+            "@test"
+        ]
     },
     "minimum-stability": "stable",
     "prefer-stable": true,

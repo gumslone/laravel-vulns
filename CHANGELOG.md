@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.20.0
+
+### Added
+- `php artisan vulns:audit` — audits the app's own `composer.lock` / `package-lock.json`
+  (`--no-dev`, `--min-severity`, `--source`, `--format=table|json|sarif`); exit 1 on findings,
+  3 when nothing was found but a source failed. `Support\LockfileReader` behind it.
+- `Gumslone\Vulns\Facades\Vulns` (auto-aliased as `Vulns`).
+- `Events\SourceFailed` / `Events\SearchCompleted`, dispatched through Laravel's dispatcher
+  (`vulns.events`) or any callable via `VulnSearch::listen()`.
+- Exporters: `OsvExporter`, `CycloneDxExporter`, `SarifExporter`, `OpenVexExporter`.
+- Lookup caching for the product-level feeds (NVD, CVE-Search, EUVD, Shodan CVEDB, Red Hat):
+  complete answers only, `result_cache_ttl` per source (default 3600, `0` = off).
+- README: custom sources (`vulns.sources` tag), exporting, caching, the audit command.
+
+### Fixed
+- Snyk / OSS Index `supports()` no longer throw for coordinates no purl can express.
+
+### Packaging
+- PHPStan (level 5) and Pint are dev dependencies and CI jobs; `composer check` runs all three.
+- CI matrix: PHP 8.2–8.5 × Laravel 11 / 12 / 13 (Testbench 9–11) plus a lowest-dependencies job,
+  and `composer audit`.
+- `.gitattributes` keeps tests and tooling out of the dist archive; composer description and
+  keywords cover all eleven sources.
+
 ## 1.19.0
 
 ### Added

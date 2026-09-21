@@ -88,6 +88,16 @@ class RedHatSource extends AbstractSource
 
         // The API pages via per_page/page (1-based); a full page means more.
         $pending = array_fill_keys(array_keys($keysByName), 1);
+        // Product-level lookups answered recently come from the cache (see
+        // AbstractSource::cachedLookup) — only complete answers are stored.
+        $truncated = [];
+        foreach (array_keys($pending) as $lookup) {
+            if (($cached = $this->cachedLookup('redhat|'.$lookup)) !== null) {
+                $entriesByName[$lookup] = $cached;
+                unset($pending[$lookup]);
+            }
+        }
+        $fetched = array_keys($pending);
         while ($pending !== []) {
             $next = [];
             $requests = function () use ($pending, $pageSize) {
@@ -100,7 +110,7 @@ class RedHatSource extends AbstractSource
 
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
-                'fulfilled' => function ($response, $name) use (&$entriesByName, &$next, &$failed, &$firstReason, $pending, $keysByName, $pageSize, $maxPages) {
+                'fulfilled' => function ($response, $name) use (&$entriesByName, &$next, &$failed, &$firstReason, &$truncated, $pending, $keysByName, $pageSize, $maxPages) {
                     $entries = json_decode($response->getBody()->getContents(), true);
                     if (! is_array($entries)) {
                         $failed++;
@@ -115,6 +125,7 @@ class RedHatSource extends AbstractSource
                         return; // a short page is the last one
                     }
                     if ($pending[$name] >= $maxPages) {
+                        $truncated[$name] = true;
                         $this->warn(
                             sprintf('results for "%s" truncated at %d CVEs (max_pages=%d)', $name, count($entriesByName[$name]), $maxPages),
                             [], $keysByName[$name],
@@ -144,6 +155,12 @@ class RedHatSource extends AbstractSource
             throw new \RuntimeException(sprintf(
                 'Red Hat: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
+        }
+
+        foreach ($fetched as $lookup) {
+            if (! isset($truncated[$lookup])) {
+                $this->cacheLookup('redhat|'.$lookup, $entriesByName[$lookup]);
+            }
         }
 
         foreach ($entriesByName as $name => $entries) {

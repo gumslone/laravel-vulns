@@ -3,9 +3,9 @@
 use Gumslone\Vulns\Sources\GitHubAdvisorySource;
 use Gumslone\Vulns\Sources\NvdSource;
 use Gumslone\Vulns\Sources\SnykSource;
-use Gumslone\Vulns\VulnsServiceProvider;
 use Gumslone\Vulns\VulnSearch;
-
+use Gumslone\Vulns\VulnsServiceProvider;
+use Illuminate\Support\ServiceProvider;
 
 it('resolves VulnSearch with every source, straight out of the box', function () {
     $search = app(VulnSearch::class);
@@ -57,7 +57,7 @@ it('keeps GitHub usable without a token (repository advisories) and NVD keyless'
 });
 
 it('publishes the config file under the vulns-config tag', function () {
-    $paths = Illuminate\Support\ServiceProvider::pathsToPublish(VulnsServiceProvider::class, 'vulns-config');
+    $paths = ServiceProvider::pathsToPublish(VulnsServiceProvider::class, 'vulns-config');
 
     expect($paths)->not->toBeEmpty()
         ->and(array_key_first($paths))->toEndWith('config/vulns.php');

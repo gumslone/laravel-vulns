@@ -55,10 +55,22 @@ class NvdSource extends AbstractSource
             return [];
         }
 
-        $vulns = [];
+        // The lookup is by product (the match string carries no version), so
+        // one answer serves every version of it — and anonymous NVD access is
+        // throttled to a request every six seconds.
+        $matchString = $this->matchString($cpe);
+        $affecting = fn (array $cves): array => array_values(array_filter(array_map(
+            fn (array $cve) => $this->versionIsAffected($cve, $package, $cpe) ? $this->parseCve($cve) : null,
+            $cves,
+        )));
+        if (($cached = $this->cachedLookup($matchString)) !== null) {
+            return $affecting($cached);
+        }
+
+        $cves = [];
         $startIndex = 0;
         // Hard safety cap: 10 pages × 2000 default page size covers any real
-        // package; beyond that we log the truncation rather than loop forever.
+        // package; beyond that the truncation is reported rather than looping forever.
         $maxPages = (int) $this->config('max_pages', 10);
 
         try {
@@ -67,15 +79,14 @@ class NvdSource extends AbstractSource
 
                 // virtualMatchString matches the CPE with wildcards against configurations
                 $response = $this->http->get('cves/2.0', [
-                    'query' => ['virtualMatchString' => $this->matchString($cpe), 'startIndex' => $startIndex],
+                    'query' => ['virtualMatchString' => $matchString, 'startIndex' => $startIndex],
                 ]);
                 $data = $this->decode($response, "NVD query for {$package->name}");
 
                 $items = $data['vulnerabilities'] ?? [];
                 foreach ($items as $item) {
-                    $vuln = $this->parseCve($item['cve'] ?? []);
-                    if ($vuln && $this->versionIsAffected($item['cve'] ?? [], $package, $cpe)) {
-                        $vulns[] = $vuln;
+                    if (is_array($item['cve'] ?? null)) {
+                        $cves[] = $item['cve'];
                     }
                 }
 
@@ -83,7 +94,12 @@ class NvdSource extends AbstractSource
                 // also ends the walk in case the server miscounts totalResults.
                 $startIndex += count($items);
                 if ($items === [] || $startIndex >= (int) ($data['totalResults'] ?? 0)) {
-                    return $vulns;
+                    // A product with thousands of CVEs is too heavy to keep around.
+                    if (count($cves) <= (int) $this->config('result_cache_max', 500)) {
+                        $this->cacheLookup($matchString, $cves);
+                    }
+
+                    return $affecting($cves);
                 }
             }
         } catch (GuzzleException|\RuntimeException $e) {
@@ -96,7 +112,7 @@ class NvdSource extends AbstractSource
 
         $this->warn("results for {$package->name} truncated at {$startIndex} CVEs (max_pages={$maxPages})");
 
-        return $vulns;
+        return $affecting($cves);
     }
 
     public function supports(PackageData $package): bool

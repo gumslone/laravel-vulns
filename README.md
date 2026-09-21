@@ -328,6 +328,36 @@ php artisan vulns:search 'cpe:2.3:a:apache:log4j:2.14.1:*:*:*:*:*:*:*' --json --
 Exits non-zero when a source failed (results may be incomplete) or the query
 is unrecognisable — never merely because advisories were found.
 
+### Audit your own application
+
+`vulns:audit` reads the app's `composer.lock` and `package-lock.json` (v1–v3)
+and checks every dependency against the enabled sources — a CI gate in one line:
+
+```bash
+php artisan vulns:audit                                   # both lockfiles in the project root
+php artisan vulns:audit --no-dev --min-severity=high      # production dependencies, high and up
+php artisan vulns:audit --format=sarif > vulns.sarif      # GitHub code scanning / GitLab / Azure DevOps
+php artisan vulns:audit --format=json --lock=frontend/package-lock.json
+```
+
+| Exit code | Meaning |
+|---|---|
+| `0` | nothing at or above the threshold |
+| `1` | findings |
+| `2` | bad input (unknown lockfile, option) |
+| `3` | nothing found **but a source failed** — inconclusive, never a green build on an outage (`--ignore-errors` accepts it) |
+
+Withdrawn advisories are left out (`--include-withdrawn`), unscored ones are
+kept ("unknown" is not "harmless"), and the table names the version to upgrade
+to. Schedule it like any command:
+
+```php
+Schedule::command('vulns:audit --no-dev --min-severity=high')->daily()->emailOutputOnFailure('security@example.test');
+```
+
+`Support\LockfileReader::read($path)` gives you the same `PackageData` list for
+your own tooling.
+
 ### Calling one source directly
 
 ```php
@@ -469,6 +499,40 @@ foreach (app('vulns.enabled_sources') as $source) {
 Logging goes to the app logger and payload caching to the app cache
 automatically. Bind `Gumslone\Vulns\Contracts\CpeLookup` to plug a curated
 PURL→CPE catalog into the NVD-style sources.
+
+### Facade and events
+
+```php
+use Gumslone\Vulns\Facades\Vulns;
+
+$vulns  = Vulns::searchPurl('pkg:npm/lodash@4.17.20');
+$report = Vulns::only(['osv', 'github'])->report($packages);
+```
+
+Every search reports to Laravel's event dispatcher (`vulns.events`, on by
+default): `Events\SourceFailed` (`source`, `message`, `partial`) whenever a feed
+threw or answered only partially, and `Events\SearchCompleted` (`report`) after
+each batch — enough to alert on a feed that keeps failing or to count findings:
+
+```php
+Event::listen(SourceFailed::class, fn (SourceFailed $e) => Log::warning("vulns: {$e->source} {$e->message}"));
+```
+
+Outside Laravel, `$search->listen(fn (object $event) => …)` is the same hook; a
+listener that throws never breaks a search.
+
+### Custom sources
+
+Implement `Contracts\Source` (or extend `Sources\AbstractSource` for the HTTP
+client, caching, `warnings()` and `supports()` / `knowsId()` plumbing), bind it,
+and tag it — `VulnSearch` picks up everything tagged `vulns.sources`:
+
+```php
+$this->app->bind(InternalAdvisories::class, fn () => new InternalAdvisories(config('services.advisories')));
+$this->app->tag([InternalAdvisories::class], 'vulns.sources');
+```
+
+Add its `name()` to `vulns.priority` to place it in the merge's trust order.
 
 ## Plain PHP
 
@@ -709,6 +773,34 @@ releases (`1.1.1k`), Go pseudo-versions, unknown qualifiers.
 `VersionRange::isVulnerable()`, `relevantTo()` and `Version::order()` are the
 same logic for ranges and versions you hold elsewhere.
 
+## Exporting
+
+```php
+use Gumslone\Vulns\Export\{OsvExporter, CycloneDxExporter, OpenVexExporter, SarifExporter};
+
+OsvExporter::export($vuln);                                   // OSV-schema document
+CycloneDxExporter::export($vuln, ['pkg:npm/lodash@4.17.20']); // CycloneDX 1.6 vulnerabilities[] entry (+ optional VEX analysis)
+SarifExporter::export($packages, $report->results);           // SARIF 2.1.0 log for code-scanning UIs
+
+$statement = OpenVexExporter::statement($vuln, ['pkg:npm/lodash@4.17.20'], 'not_affected', 'vulnerable_code_not_in_execute_path');
+OpenVexExporter::document([$statement], author: 'security@example.test');   // OpenVEX 0.2.0
+```
+
+Exports only state what a source stated: a vector this package *inferred* for
+a bare score (see below) is left out of OSV and CycloneDX output. OpenVEX
+statements are validated against the specification (a `not_affected` verdict
+needs its justification, an `affected` one its action statement).
+
+## Lookup caching
+
+Product-level lookups — NVD by CPE, CVE-Search, EUVD, Shodan CVEDB, Red Hat —
+are cached for an hour when the source has a PSR-16 cache (automatic in
+Laravel): one answer serves every version of a product, which matters most on
+NVD's anonymous rate limit of one request every six seconds. Only complete
+answers are stored (never a truncated or failed one), the version filter still
+runs per package, and `result_cache_ttl` (seconds, `0` = off) tunes it per
+source. OSV advisory payloads are cached separately by id + `modified` stamp.
+
 ## Related
 
 - [gumslone/GumVulns](https://github.com/gumslone/GumVulns) — a standalone,
@@ -733,6 +825,9 @@ $search = new VulnSearch([
 ```
 
 ## Tests
+
+`composer check` runs Pint, PHPStan and the suite; CI runs them on PHP 8.2–8.5
+against Laravel 11, 12 and 13, plus the lowest supported dependency set.
 
 ```bash
 composer install && composer test
