@@ -333,7 +333,7 @@ it('refetches a vulnerability when its modified stamp changes', function () {
     expect($second[0][0]->summary)->toBe('Updated summary');
 });
 
-it('skips vulnerabilities whose hydration fails but keeps the rest', function () {
+it('keeps an id-only record (and warns) when an advisory\'s details cannot be fetched', function () {
     $history = [];
     $source = makeOsvSource([
         new Response(200, [], json_encode(['results' => [
@@ -347,7 +347,13 @@ it('skips vulnerabilities whose hydration fails but keeps the rest', function ()
         new PackageData(name: 'left-pad', version: '1.3.0', ecosystem: 'npm'),
     ]);
 
-    expect(array_map(fn ($v) => $v->vulnId, $results[0]))->toBe(['OSV-B']);
+    // querybatch already said OSV-A affects the package — dropping it
+    // would report a vulnerable package clean.
+    expect(array_map(fn ($v) => $v->vulnId, $results[0]))->toBe(['OSV-A', 'OSV-B'])
+        ->and($results[0][0]->extra['details_unavailable'])->toBeTrue()
+        ->and($results[0][0]->sourceModifiedAt?->format('Y-m-d'))->toBe('2024-01-01')
+        ->and($source->warnings())->toHaveCount(1)
+        ->and($source->warnings()[0])->toContain('OSV-A');
 });
 
 it('queries commit-pinned packages (git submodules) by commit', function () {

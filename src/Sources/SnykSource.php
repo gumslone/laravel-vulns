@@ -107,8 +107,14 @@ class SnykSource extends AbstractSource
 
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
-                'fulfilled' => function ($response, $key) use (&$results, &$next, $packages) {
-                    $data = json_decode($response->getBody()->getContents(), true) ?? [];
+                'fulfilled' => function ($response, $key) use (&$results, &$next, &$failed, &$firstReason, $packages) {
+                    $data = json_decode($response->getBody()->getContents(), true);
+                    if (! is_array($data)) {
+                        $failed++;
+                        $firstReason ??= 'the response was not valid JSON';
+
+                        return;
+                    }
 
                     $results[$key] = array_merge($results[$key], array_values(array_filter(array_map(
                         fn (array $issue) => $this->parseIssue($issue, $packages[$key]),

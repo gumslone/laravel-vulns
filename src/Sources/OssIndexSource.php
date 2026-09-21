@@ -108,8 +108,14 @@ class OssIndexSource extends AbstractSource
 
         $pool = new Pool($this->http, $requests(), [
             'concurrency' => (int) $this->config('max_concurrency', 4),
-            'fulfilled' => function ($response) use (&$results, $packages, $keysByCoordinate, $coordinateAliases) {
-                $reports = json_decode($response->getBody()->getContents(), true) ?? [];
+            'fulfilled' => function ($response) use (&$results, &$failed, &$firstReason, $packages, $keysByCoordinate, $coordinateAliases) {
+                $reports = json_decode($response->getBody()->getContents(), true);
+                if (! is_array($reports)) {
+                    $failed++;
+                    $firstReason ??= 'the response was not valid JSON';
+
+                    return;
+                }
 
                 foreach ($reports as $report) {
                     if (! is_array($report)) {

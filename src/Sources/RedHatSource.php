@@ -20,8 +20,12 @@ use Psr\SimpleCache\CacheInterface;
  *
  * Lookup is by package NAME only — the API filters CVEs by the affected
  * RPM/source package and knows nothing about the caller's installed version.
- * Only meaningful for OS/rpm-ish ecosystems, but unknown names simply return
- * an empty list, so no ecosystem filter is applied here.
+ * The search is by RPM NAME alone, so it is only asked about OS-level
+ * packages (`ecosystems` option, default rpm/generic/unspecified): for a
+ * language package the same name is a different piece of software — npm's
+ * `tar`, `ws` or `http` would inherit the RPMs' CVEs, and with no version
+ * ranges to judge by nothing could ever clear them. Pass `['*']` to ask
+ * about everything regardless.
  */
 class RedHatSource extends AbstractSource
 {
@@ -40,7 +44,21 @@ class RedHatSource extends AbstractSource
 
     public function supports(PackageData $package): bool
     {
-        return trim($package->name) !== '';
+        if ($this->rpmName($package) === '') {
+            return false;
+        }
+
+        $ecosystems = array_map('strtolower', (array) $this->config('ecosystems', ['rpm', 'redhat', 'generic', '']));
+
+        return in_array('*', $ecosystems, true) || in_array(strtolower($package->ecosystem), $ecosystems, true);
+    }
+
+    /** "redhat/openssl" (from pkg:rpm/redhat/openssl) → "openssl": the search knows bare RPM names. */
+    private function rpmName(PackageData $package): string
+    {
+        $name = trim($package->name);
+
+        return ($slash = strrpos($name, '/')) === false ? $name : substr($name, $slash + 1);
     }
 
     public function queryBatch(array $packages): array
@@ -52,66 +70,91 @@ class RedHatSource extends AbstractSource
         // one request.
         $keysByName = [];
         foreach ($packages as $key => $package) {
-            $keysByName[$package->name][] = $key;
+            if ($this->supports($package)) {
+                $keysByName[$this->rpmName($package)][] = $key;
+            }
         }
 
-        // The API pages via per_page/page; request one large page and flag a
-        // full page as possible truncation instead of chasing page numbers
-        // for a source that is a secondary evidence stream.
-        $pageSize = (int) $this->config('page_size', 1000);
+        $pageSize = max(1, (int) $this->config('page_size', 1000));
+        $maxPages = max(1, (int) $this->config('max_pages', 10));
 
-        $requests = function () use ($keysByName, $pageSize) {
-            foreach (array_keys($keysByName) as $name) {
-                yield $name => fn () => $this->http->getAsync('cve.json', [
-                    'query' => ['package' => $name, 'per_page' => $pageSize],
-                ]);
-            }
-        };
-
-        // Fail safe: a rejected request must not read as "no known
-        // vulnerabilities" for its package — collect rejections during the
-        // pool run and throw once the pool has drained.
+        // Fail safe: a rejected or unreadable page must not read as "no known
+        // vulnerabilities" for its package — collect failures during the
+        // pool rounds and throw once they have drained.
         $failed = 0;
+        $requested = 0;
         $firstReason = null;
+        $entriesByName = array_fill_keys(array_keys($keysByName), []);
 
-        $pool = new Pool($this->http, $requests(), [
-            'concurrency' => (int) $this->config('max_concurrency', 8),
-            'fulfilled' => function ($response, $name) use (&$results, $keysByName, $pageSize) {
-                $entries = json_decode($response->getBody()->getContents(), true) ?? [];
-
-                if (count($entries) >= $pageSize) {
-                    $this->log('warning', '[vulns] Red Hat returned a full page — results may be truncated', [
-                        'package' => $name,
-                        'per_page' => $pageSize,
+        // The API pages via per_page/page (1-based); a full page means more.
+        $pending = array_fill_keys(array_keys($keysByName), 1);
+        while ($pending !== []) {
+            $next = [];
+            $requests = function () use ($pending, $pageSize) {
+                foreach ($pending as $name => $page) {
+                    yield $name => fn () => $this->http->getAsync('cve.json', [
+                        'query' => ['package' => (string) $name, 'per_page' => $pageSize] + ($page > 1 ? ['page' => $page] : []),
                     ]);
                 }
+            };
 
-                $vulns = array_values(array_filter(array_map(
-                    [$this, 'parseEntry'],
-                    array_filter($entries, 'is_array'),
-                )));
+            $pool = new Pool($this->http, $requests(), [
+                'concurrency' => (int) $this->config('max_concurrency', 8),
+                'fulfilled' => function ($response, $name) use (&$entriesByName, &$next, &$failed, &$firstReason, $pending, $keysByName, $pageSize, $maxPages) {
+                    $entries = json_decode($response->getBody()->getContents(), true);
+                    if (! is_array($entries)) {
+                        $failed++;
+                        $firstReason ??= 'the response was not valid JSON';
 
-                foreach ($keysByName[$name] as $key) {
-                    $results[$key] = $vulns;
-                }
-            },
-            'rejected' => function ($reason, $name) use (&$failed, &$firstReason) {
-                $failed++;
-                $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
-                $firstReason ??= $message;
-                $this->log('warning', '[vulns] Red Hat query failed', [
-                    'package' => $name,
-                    'error' => $message,
-                ]);
-            },
-        ]);
+                        return;
+                    }
 
-        $pool->promise()->wait();
+                    $entriesByName[$name] = array_merge($entriesByName[$name], $entries);
+
+                    if (count($entries) < $pageSize) {
+                        return; // a short page is the last one
+                    }
+                    if ($pending[$name] >= $maxPages) {
+                        $this->warn(
+                            sprintf('results for "%s" truncated at %d CVEs (max_pages=%d)', $name, count($entriesByName[$name]), $maxPages),
+                            [], $keysByName[$name],
+                        );
+
+                        return;
+                    }
+                    $next[$name] = $pending[$name] + 1;
+                },
+                'rejected' => function ($reason, $name) use (&$failed, &$firstReason) {
+                    $failed++;
+                    $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                    $firstReason ??= $message;
+                    $this->log('warning', '[vulns] Red Hat query failed', [
+                        'package' => $name,
+                        'error' => $message,
+                    ]);
+                },
+            ]);
+
+            $requested += count($pending);
+            $pool->promise()->wait();
+            $pending = $next;
+        }
 
         if ($failed > 0) {
             throw new \RuntimeException(sprintf(
-                'Red Hat: %d of %d requests failed: %s', $failed, count($keysByName), $firstReason,
+                'Red Hat: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
+        }
+
+        foreach ($entriesByName as $name => $entries) {
+            $vulns = array_values(array_filter(array_map(
+                [$this, 'parseEntry'],
+                array_filter($entries, 'is_array'),
+            )));
+
+            foreach ($keysByName[$name] as $key) {
+                $results[$key] = $vulns;
+            }
         }
 
         return $results;
@@ -122,9 +165,8 @@ class RedHatSource extends AbstractSource
         try {
             // Red Hat serves CVE detail pages under the uppercase id only.
             $response = $this->http->get('cve/'.rawurlencode(strtoupper($vulnId)).'.json');
-            $data = json_decode($response->getBody()->getContents(), true);
 
-            return is_array($data) ? $this->parseEntry($data) : null;
+            return $this->parseEntry($this->decode($response, "Red Hat lookup of {$vulnId}"));
         } catch (BadResponseException $e) {
             // 404 is a semantic answer — "no such CVE in Red Hat's data" —
             // not a transport failure, so it maps to null rather than a throw.

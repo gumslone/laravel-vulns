@@ -62,57 +62,100 @@ class CveSearchSource extends AbstractSource
             }
 
             $parts = $this->cpeResolver->parse23($cpe);
-            $perPage = (int) $this->config('page_size', 100);
-            $path = "search/{$parts['vendor']}/{$parts['product']}?per_page={$perPage}";
+            // Encoded per segment: a crafted CPE must not be able to climb
+            // out of search/ or append a query string.
+            $path = 'search/'.rawurlencode((string) $parts['vendor']).'/'.rawurlencode((string) $parts['product']);
             $keysByPath[$path][] = $key;
             $productByPath[$path] = $parts['product'];
         }
 
-        $requests = function () use ($keysByPath) {
-            foreach (array_keys($keysByPath) as $path) {
-                yield $path => fn () => $this->http->getAsync($path);
-            }
-        };
+        $perPage = max(1, (int) $this->config('page_size', 100));
+        $maxPages = max(1, (int) $this->config('max_pages', 20));
 
-        // Fail safe: a rejected request must not read as "no known
-        // vulnerabilities" for its packages — collect rejections during the
-        // pool run and throw once the pool has drained.
+        // Fail safe: a rejected or unreadable page must not read as "no known
+        // vulnerabilities" for its packages — collect failures during the
+        // pool rounds and throw once they have drained.
         $failed = 0;
+        $requested = 0;
         $firstReason = null;
+        $itemsByPath = array_fill_keys(array_keys($keysByPath), []);
 
-        $pool = new Pool($this->http, $requests(), [
-            'concurrency' => (int) $this->config('max_concurrency', 8),
-            'fulfilled' => function ($response, $path) use (&$results, $keysByPath, $productByPath) {
-                $data = json_decode($response->getBody()->getContents(), true);
-
-                $items = $this->normaliseResults(is_array($data) ? $data : []);
-                $product = $productByPath[$path] ?? null;
-                $vulns = array_values(array_filter(array_map(
-                    fn (array $item) => $this->parseCve($item, $product),
-                    $items,
-                )));
-
-                foreach ($keysByPath[$path] as $key) {
-                    $results[$key] = $vulns;
+        // Each round fetches one page per pending lookup concurrently; a
+        // full page means there may be another (a popular product runs to
+        // hundreds of rows — page 1 alone holds only the newest CVEs, and an
+        // old installed version is affected by exactly the older ones).
+        $pending = array_fill_keys(array_keys($keysByPath), 1);
+        while ($pending !== []) {
+            $next = [];
+            $requests = function () use ($pending, $perPage) {
+                foreach ($pending as $path => $page) {
+                    yield $path => fn () => $this->http->getAsync("{$path}?per_page={$perPage}&page={$page}");
                 }
-            },
-            'rejected' => function ($reason, $path) use (&$failed, &$firstReason) {
-                $failed++;
-                $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
-                $firstReason ??= $message;
-                $this->log('warning', '[vulns] CVE-Search query failed', [
-                    'lookup' => $path,
-                    'error' => $message,
-                ]);
-            },
-        ]);
+            };
 
-        $pool->promise()->wait();
+            $pool = new Pool($this->http, $requests(), [
+                'concurrency' => (int) $this->config('max_concurrency', 8),
+                'fulfilled' => function ($response, $path) use (&$itemsByPath, &$next, &$failed, &$firstReason, $pending, $perPage, $maxPages, $keysByPath) {
+                    $data = json_decode($response->getBody()->getContents(), true);
+                    if (! is_array($data)) {
+                        $failed++;
+                        $firstReason ??= 'the response was not valid JSON';
+
+                        return;
+                    }
+
+                    $items = $this->normaliseResults($data);
+                    $itemsByPath[$path] = array_merge($itemsByPath[$path], $items);
+
+                    $total = is_numeric($data['total_count'] ?? null) ? (int) $data['total_count'] : null;
+                    $more = $total !== null ? count($itemsByPath[$path]) < $total : count($items) >= $perPage;
+                    if ($items === [] || ! $more) {
+                        return;
+                    }
+                    if ($pending[$path] >= $maxPages) {
+                        $this->warn(
+                            sprintf('results for %s truncated at %d rows (max_pages=%d)', $path, count($itemsByPath[$path]), $maxPages),
+                            [], $keysByPath[$path],
+                        );
+
+                        return;
+                    }
+                    $next[$path] = $pending[$path] + 1;
+                },
+                'rejected' => function ($reason, $path) use (&$failed, &$firstReason) {
+                    $failed++;
+                    $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                    $firstReason ??= $message;
+                    $this->log('warning', '[vulns] CVE-Search query failed', [
+                        'lookup' => $path,
+                        'error' => $message,
+                    ]);
+                },
+            ]);
+
+            $requested += count($pending);
+            $pool->promise()->wait();
+            $pending = $next;
+        }
 
         if ($failed > 0) {
             throw new \RuntimeException(sprintf(
-                'CVE-Search: %d of %d requests failed: %s', $failed, count($keysByPath), $firstReason,
+                'CVE-Search: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
+        }
+
+        foreach ($itemsByPath as $path => $items) {
+            // The same CVE arrives once per upstream feed; keep the first.
+            $vulns = [];
+            foreach ($items as $item) {
+                $vuln = $this->parseCve($item, $productByPath[$path] ?? null);
+                if ($vuln !== null) {
+                    $vulns[$vuln->vulnId] ??= $vuln;
+                }
+            }
+            foreach ($keysByPath[$path] as $key) {
+                $results[$key] = array_values($vulns);
+            }
         }
 
         return $results;
@@ -122,11 +165,17 @@ class CveSearchSource extends AbstractSource
     {
         try {
             $response = $this->http->get('cve/'.rawurlencode($vulnId));
-            $data = json_decode($response->getBody()->getContents(), true);
+            // An unknown id answers 200 with a literal `null`.
+            $data = $this->decode($response, "CVE-Search lookup of {$vulnId}", allowNull: true);
 
             return $data ? $this->parseCve($data) : null;
-        } catch (GuzzleException) {
-            return null;
+        } catch (GuzzleException $e) {
+            if (self::isNotFound($e)) {
+                return null;
+            }
+
+            // Fail safe: an unreachable instance is not "unknown CVE".
+            throw new \RuntimeException("CVE-Search lookup failed for {$vulnId}: {$e->getMessage()}", 0, $e);
         }
     }
 

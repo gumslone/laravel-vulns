@@ -71,64 +71,91 @@ class ShodanCvedbSource extends AbstractSource
             $keysByProduct[$lookup][] = $key;
         }
 
-        // CVEDB caps result lists via `limit`; 50 is what the reference
-        // implementation requests. A full page may mean truncation — flag it
-        // rather than guessing at undocumented paging parameters.
-        $limit = (int) $this->config('page_size', 50);
+        // CVEDB caps each list via `limit` and walks on with `skip`. Results
+        // come newest first, so page 1 alone would miss exactly the older
+        // CVEs an old installed version is affected by.
+        $limit = max(1, (int) $this->config('page_size', 50));
+        $maxPages = max(1, (int) $this->config('max_pages', 20));
 
-        $requests = function () use ($keysByProduct, $queryByProduct, $limit) {
-            foreach (array_keys($keysByProduct) as $product) {
-                yield $product => fn () => $this->http->getAsync('cves', [
-                    'query' => $queryByProduct[$product] + ['limit' => $limit],
-                ]);
-            }
-        };
-
-        // Fail safe: a rejected request must not read as "no known
-        // vulnerabilities" for its product — collect rejections during the
-        // pool run and throw once the pool has drained.
+        // Fail safe: a rejected or unreadable page must not read as "no known
+        // vulnerabilities" for its product — collect failures during the
+        // pool rounds and throw once they have drained.
         $failed = 0;
+        $requested = 0;
         $firstReason = null;
+        $itemsByProduct = array_fill_keys(array_keys($keysByProduct), []);
 
-        $pool = new Pool($this->http, $requests(), [
-            'concurrency' => (int) $this->config('max_concurrency', 8),
-            'fulfilled' => function ($response, $product) use (&$results, $keysByProduct, $limit) {
-                $data = json_decode($response->getBody()->getContents(), true) ?? [];
-                $items = $data['cves'] ?? [];
-
-                if (count($items) >= $limit) {
-                    $this->log('warning', '[vulns] Shodan CVEDB returned a full page — results may be truncated', [
-                        'product' => $product,
-                        'limit' => $limit,
+        $pending = array_fill_keys(array_keys($keysByProduct), 0);
+        while ($pending !== []) {
+            $next = [];
+            $requests = function () use ($pending, $queryByProduct, $limit) {
+                foreach ($pending as $product => $page) {
+                    yield $product => fn () => $this->http->getAsync('cves', [
+                        'query' => $queryByProduct[$product] + ['limit' => $limit] + ($page > 0 ? ['skip' => $page * $limit] : []),
                     ]);
                 }
+            };
 
-                $vulns = array_values(array_filter(array_map(
-                    fn ($item) => is_array($item) ? $this->parseItem($item) : null,
-                    $items,
-                )));
+            $pool = new Pool($this->http, $requests(), [
+                'concurrency' => (int) $this->config('max_concurrency', 8),
+                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$next, &$failed, &$firstReason, $pending, $keysByProduct, $limit, $maxPages) {
+                    $data = json_decode($response->getBody()->getContents(), true);
+                    if (! is_array($data)) {
+                        $failed++;
+                        $firstReason ??= 'the response was not valid JSON';
 
-                foreach ($keysByProduct[$product] as $key) {
-                    $results[$key] = $vulns;
-                }
-            },
-            'rejected' => function ($reason, $product) use (&$failed, &$firstReason) {
-                $failed++;
-                $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
-                $firstReason ??= $message;
-                $this->log('warning', '[vulns] Shodan CVEDB query failed', [
-                    'product' => $product,
-                    'error' => $message,
-                ]);
-            },
-        ]);
+                        return;
+                    }
 
-        $pool->promise()->wait();
+                    $items = is_array($data['cves'] ?? null) ? $data['cves'] : [];
+                    $itemsByProduct[$product] = array_merge($itemsByProduct[$product], $items);
+
+                    if (count($items) < $limit) {
+                        return; // a short page is the last one
+                    }
+                    if ($maxPages <= $pending[$product] + 1) {
+                        $this->warn(
+                            sprintf('results for "%s" truncated at %d CVEs (max_pages=%d)', $product, count($itemsByProduct[$product]), $maxPages),
+                            [], $keysByProduct[$product],
+                        );
+
+                        return;
+                    }
+                    $next[$product] = $pending[$product] + 1;
+                },
+                'rejected' => function ($reason, $product) use (&$failed, &$firstReason) {
+                    $failed++;
+                    $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                    $firstReason ??= $message;
+                    $this->log('warning', '[vulns] Shodan CVEDB query failed', [
+                        'product' => $product,
+                        'error' => $message,
+                    ]);
+                },
+            ]);
+
+            $requested += count($pending);
+            $pool->promise()->wait();
+            $pending = $next;
+        }
 
         if ($failed > 0) {
             throw new \RuntimeException(sprintf(
-                'Shodan CVEDB: %d of %d requests failed: %s', $failed, count($keysByProduct), $firstReason,
+                'Shodan CVEDB: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
+        }
+
+        foreach ($itemsByProduct as $product => $items) {
+            $vulns = [];
+            foreach (array_filter($items, 'is_array') as $item) {
+                $vuln = $this->parseItem($item);
+                if ($vuln !== null) {
+                    $vulns[$vuln->vulnId] ??= $vuln;
+                }
+            }
+            foreach ($keysByProduct[$product] as $key) {
+                $results[$key] = array_values($vulns);
+            }
         }
 
         return $results;
@@ -153,9 +180,7 @@ class ShodanCvedbSource extends AbstractSource
             throw new \RuntimeException("Shodan CVEDB: fetch of {$vulnId} failed: {$e->getMessage()}", 0, $e);
         }
 
-        $data = json_decode($response->getBody()->getContents(), true);
-
-        return is_array($data) ? $this->parseItem($data) : null;
+        return $this->parseItem($this->decode($response, "Shodan CVEDB lookup of {$vulnId}"));
     }
 
     private function parseItem(array $item): ?VulnerabilityData

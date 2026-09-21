@@ -77,9 +77,7 @@ class MitreCveSource extends AbstractSource
             throw new \RuntimeException("MITRE: fetch of {$vulnId} failed: {$e->getMessage()}", 0, $e);
         }
 
-        $data = json_decode($response->getBody()->getContents(), true);
-
-        return is_array($data) ? $this->parseRecord($data) : null;
+        return $this->parseRecord($this->decode($response, "MITRE lookup of {$vulnId}"));
     }
 
     /** Map a CVE Record v5 JSON document into the normalised DTO. */

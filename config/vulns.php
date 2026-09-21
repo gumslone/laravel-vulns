@@ -38,6 +38,14 @@ return [
     'merge' => env('VULNS_MERGE', 'priority'),
 
     /*
+    | Several feeds answer by package NAME alone (GitHub, CVE-Search, Shodan),
+    | so VulnSearch drops advisories the package's version provably escapes.
+    | Only a provable miss is dropped — a range that can't be read or ordered
+    | keeps the advisory. Set false to receive everything a name ever had.
+    */
+    'version_filter' => env('VULNS_VERSION_FILTER', true),
+
+    /*
     |--------------------------------------------------------------------------
     | Threat enrichment
     |--------------------------------------------------------------------------
@@ -108,6 +116,9 @@ return [
         'enabled' => env('VULNS_CVE_SEARCH_ENABLED', true),
         'base_url' => env('VULNS_CVE_SEARCH_URL', 'https://cve.circl.lu/api'),
         'page_size' => (int) env('VULNS_CVE_SEARCH_PAGE_SIZE', 100),
+        // Every page is walked; past this cap results are kept but the
+        // truncation lands in errors() and coverage() ('failed').
+        'max_pages' => (int) env('VULNS_CVE_SEARCH_MAX_PAGES', 20),
         // Self-hosted instances often use a private CA; set false to skip
         // certificate verification (public CIRCL should stay true).
         'verify_tls' => env('VULNS_CVE_SEARCH_VERIFY_TLS', true),
@@ -119,6 +130,7 @@ return [
         // euvdservices — the euvd.enisa.europa.eu domain serves the SPA's
         // HTML shell on /api/*, not the API.
         'base_url' => env('VULNS_EUVD_URL', 'https://euvdservices.enisa.europa.eu/api'),
+        'max_pages' => (int) env('VULNS_EUVD_MAX_PAGES', 20), // × 100 records
         'max_concurrency' => (int) env('VULNS_EUVD_CONCURRENCY', 8),
     ],
 
@@ -148,6 +160,11 @@ return [
         'enabled' => env('VULNS_REDHAT_ENABLED', true),
         'base_url' => env('VULNS_REDHAT_URL', 'https://access.redhat.com/hydra/rest/securitydata'),
         'page_size' => (int) env('VULNS_REDHAT_PAGE_SIZE', 1000),
+        'max_pages' => (int) env('VULNS_REDHAT_MAX_PAGES', 10),
+        // The search is by RPM name alone, so it is only asked about OS-level
+        // packages: for npm's `tar` the same name is different software.
+        // ['*'] asks about every ecosystem.
+        'ecosystems' => ['rpm', 'redhat', 'generic', ''],
         'max_concurrency' => (int) env('VULNS_REDHAT_CONCURRENCY', 8),
     ],
 
@@ -157,6 +174,7 @@ return [
         'enabled' => env('VULNS_SHODAN_CVEDB_ENABLED', true),
         'base_url' => env('VULNS_SHODAN_CVEDB_URL', 'https://cvedb.shodan.io'),
         'page_size' => (int) env('VULNS_SHODAN_CVEDB_PAGE_SIZE', 50),
+        'max_pages' => (int) env('VULNS_SHODAN_CVEDB_MAX_PAGES', 20),
         'max_concurrency' => (int) env('VULNS_SHODAN_CVEDB_CONCURRENCY', 8),
     ],
 

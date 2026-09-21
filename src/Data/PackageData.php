@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Data;
 
+use Gumslone\PackageUrl\Purl;
+use Gumslone\Vulns\Support\CpeResolver;
+use Gumslone\Vulns\Support\PurlBuilder;
+
 /**
  * Lightweight DTO representing a package discovered during manifest parsing.
  * This is the intermediate form before the record is persisted as OssPackage.
@@ -39,11 +43,11 @@ final class PackageData
      * Build a query target from a Package URL:
      * `pkg:composer/vrana/adminer@5.5.1`. The purl's type becomes the
      * ecosystem, and namespaced types keep the "namespace/name" convention
-     * ecosystem sources expect.
+     * ecosystem sources expect (Maven: "group:artifact").
      */
     public static function fromPurl(string $purl): self
     {
-        $parts = (new \Gumslone\Vulns\Support\PurlBuilder)->parse($purl);
+        $parts = (new PurlBuilder)->parse($purl);
         $namespace = $parts['namespace'] ?? null;
         $name = $parts['name'];
 
@@ -59,7 +63,14 @@ final class PackageData
             : null;
 
         return new self(
-            name: $namespace !== null && $namespace !== '' ? "{$namespace}/{$name}" : $name,
+            // Maven coordinates are "group:artifact" everywhere they are
+            // looked up (OSV, GitHub, this package's own PurlBuilder) — a
+            // "group/artifact" name finds nothing and reads as clean.
+            name: match (true) {
+                $namespace === null || $namespace === '' => $name,
+                $type === 'maven' => "{$namespace}:{$name}",
+                default => "{$namespace}/{$name}",
+            },
             version: $version,
             ecosystem: self::ecosystemForPurlType($type),
             namespace: $namespace,
@@ -81,8 +92,8 @@ final class PackageData
         // The purl package speaks every registry/forge URL dialect — use it
         // when the host app has it installed (a `suggest`, not a hard
         // dependency, to keep this core light).
-        if (class_exists(\Gumslone\PackageUrl\Purl::class)) {
-            $purl = (new \Gumslone\PackageUrl\Purl)->fromUrl($url);
+        if (class_exists(Purl::class)) {
+            $purl = (new Purl)->fromUrl($url);
             if ($purl !== null) {
                 return self::fromPurl((string) $purl);
             }
@@ -101,7 +112,7 @@ final class PackageData
 
         throw new \InvalidArgumentException(
             "Could not derive package coordinates from '{$url}'."
-            .(class_exists(\Gumslone\PackageUrl\Purl::class)
+            .(class_exists(Purl::class)
                 ? ''
                 : ' Install gumslone/laravel-package-url to convert download/release/registry URLs.'),
         );
@@ -201,6 +212,20 @@ final class PackageData
     }
 
     /**
+     * The name as the ecosystem's registry (and OSV / GitHub Advisories)
+     * spells it. Only Maven differs: "group:artifact", tolerating the
+     * "group/artifact" spelling hand-built packages sometimes carry.
+     */
+    public function registryName(): string
+    {
+        if ($this->ecosystem === 'maven' && ! str_contains($this->name, ':') && substr_count($this->name, '/') === 1) {
+            return str_replace('/', ':', $this->name);
+        }
+
+        return $this->name;
+    }
+
+    /**
      * The package's purl — the explicit one when set, else built from its
      * coordinates. Null when there aren't enough coordinates to build one.
      */
@@ -211,7 +236,7 @@ final class PackageData
         }
 
         try {
-            return (new \Gumslone\Vulns\Support\PurlBuilder)->fromPackageArray($this->toArray()) ?: null;
+            return (new PurlBuilder)->fromPackageArray($this->toArray()) ?: null;
         } catch (\Throwable) {
             return null;
         }
@@ -236,7 +261,7 @@ final class PackageData
             return null;
         }
 
-        return (new \Gumslone\Vulns\Support\CpeResolver)->resolveCpe23($this);
+        return (new CpeResolver)->resolveCpe23($this);
     }
 
     public static function fromCpe(string $cpe23): self

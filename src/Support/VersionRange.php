@@ -34,9 +34,10 @@ final class VersionRange
         // A list, not a map: PHP would turn a key like '5' into an int.
         $candidates = [];
         foreach ($fixedVersions as $fixed) {
-            $comparable = Version::comparable((string) $fixed);
+            $bare = self::stripEcosystem((string) $fixed); // "Packagist:1.8.0" → "1.8.0"
+            $comparable = Version::comparable($bare);
             if ($comparable !== null) {
-                $candidates[] = [$comparable, (string) $fixed];
+                $candidates[] = [$comparable, $bare];
             }
         }
         if ($candidates === []) {
@@ -64,22 +65,70 @@ final class VersionRange
         return null;
     }
 
-    /** version_compare with the shorter side zero-padded, so 1.0 equals 1.0.0. */
     private static function compare(string $a, string $b): int
     {
-        $pa = explode('.', $a);
-        $pb = explode('.', $b);
-        $length = max(count($pa), count($pb));
+        return Version::compare($a, $b);
+    }
 
-        return version_compare(
-            implode('.', array_pad($pa, $length, '0')),
-            implode('.', array_pad($pb, $length, '0')),
+    /**
+     * The ranges that speak about ONE package, out of an advisory's whole
+     * list. Multi-product advisories (NVD configurations, EUVD product
+     * lists) tag each range with a `product`; another product's "< 9.0.0"
+     * says nothing about this package, and must neither flag nor clear it.
+     *
+     * Untagged ranges always count. When ranges are tagged but none names
+     * this package, the result is [] — "can't tell", which isVulnerable()
+     * answers with null.
+     *
+     * @param  array<int, array<string, mixed>|string>  $ranges
+     * @return array<int, array<string, mixed>|string>
+     */
+    public static function relevantTo(array $ranges, string $packageName): array
+    {
+        $tagged = array_filter($ranges, fn ($r) => is_array($r) && is_string($r['product'] ?? null) && trim($r['product']) !== '');
+        if ($tagged === []) {
+            return $ranges;
+        }
+
+        $own = array_filter($tagged, fn (array $r) => self::sameProduct($r['product'], $packageName));
+        if ($own === []) {
+            return [];
+        }
+
+        return array_values(array_filter($ranges, fn ($r) => ! in_array($r, $tagged, true) || in_array($r, $own, true)));
+    }
+
+    /**
+     * Whether an advisory's product label and a package name denote the same
+     * thing: compared on the last name segment ("vendor:product", "group:
+     * artifact", "vendor/name" → the tail), case- and separator-insensitive,
+     * one containing the other on a word boundary ("log4j" ~ "log4j-core",
+     * but "express" ≁ "expressvpn").
+     */
+    public static function sameProduct(string $product, string $packageName): bool
+    {
+        $token = function (string $value): string {
+            $value = strtolower(trim($value));
+            $value = preg_replace('#^.*[/:]#', '', $value) ?? $value;
+
+            return trim((string) preg_replace('/[^a-z0-9.]+/', '-', $value), '-');
+        };
+        $a = $token($product);
+        $b = $token($packageName);
+        if ($a === '' || $b === '') {
+            return false;
+        }
+
+        $within = fn (string $needle, string $haystack): bool => (bool) preg_match(
+            '/(?<![a-z0-9])'.preg_quote($needle, '/').'(?![a-z0-9])/', $haystack,
         );
+
+        return $within($a, $b) || $within($b, $a);
     }
 
     /**
      * @param  array<int, array<string, mixed>|string>  $ranges  affectedRanges entries
-     * @return bool|null true = in an affected range; false = provably outside every parseable range; null = undeterminable
+     * @return bool|null true = in an affected range; false = provably outside EVERY range; null = undeterminable (any range unreadable and none matched)
      */
     public static function isVulnerable(?string $version, array $ranges): ?bool
     {
@@ -89,6 +138,7 @@ final class VersionRange
 
         $version = self::normalise($version);
         $sawParseable = false;
+        $sawUndeterminable = false;
 
         foreach ($ranges as $range) {
             $constraint = is_array($range)
@@ -96,12 +146,19 @@ final class VersionRange
                 : (is_string($range) ? $range : null);
 
             if ($constraint === null || trim($constraint) === '') {
+                // An entry we can't read (OSV event lists, a constraint that
+                // didn't parse upstream) may be the one that covers this
+                // version — it must not be outvoted by the ranges that don't.
+                $sawUndeterminable = true;
+
                 continue;
             }
 
             $result = self::satisfies($version, $constraint);
             if ($result === null) {
-                continue; // unparseable — ignore this entry
+                $sawUndeterminable = true;
+
+                continue;
             }
 
             $sawParseable = true;
@@ -110,8 +167,8 @@ final class VersionRange
             }
         }
 
-        // Parsed at least one range and matched none → outside all of them.
-        return $sawParseable ? false : null;
+        // "Not affected" only when EVERY range was readable and none matched.
+        return $sawParseable && ! $sawUndeterminable ? false : null;
     }
 
     /**
@@ -121,7 +178,12 @@ final class VersionRange
      */
     private static function satisfies(string $version, string $constraint): ?bool
     {
-        $clauses = array_filter(array_map('trim', explode(',', $constraint)));
+        // "*" — every version (NVD's unbounded CPE match).
+        if (trim($constraint) === '*') {
+            return true;
+        }
+
+        $clauses = array_filter(array_map('trim', explode(',', $constraint)), fn (string $c) => $c !== '');
         if ($clauses === []) {
             return null;
         }
@@ -138,7 +200,7 @@ final class VersionRange
             // EUVD's old records enumerate affected releases exactly this way.
             if ($m[1] === '=' || $m[1] === '==') {
                 $equal = self::isComparable($version) && self::isComparable($bound)
-                    ? version_compare($version, $bound) === 0
+                    ? self::compare($version, $bound) === 0
                     : strcasecmp($version, $bound) === 0;
                 if (! $equal) {
                     return false; // one clause fails → the AND fails
@@ -157,7 +219,7 @@ final class VersionRange
                 return null;
             }
 
-            $cmp = version_compare($version, $bound);
+            $cmp = self::compare($version, $bound);
             $ok = match ($m[1]) {
                 '>=' => $cmp >= 0,
                 '>' => $cmp > 0,
@@ -200,16 +262,23 @@ final class VersionRange
             return false;
         }
 
-        $fixes = array_values(array_filter(array_map(
-            fn ($entry) => Version::comparable(self::stripEcosystem((string) $entry)),
-            $fixedVersions,
-        )));
+        $fixes = [];
+        foreach ($fixedVersions as $entry) {
+            if (trim((string) $entry) === '') {
+                continue;
+            }
+            $fix = Version::comparable(self::stripEcosystem((string) $entry));
+            if ($fix === null) {
+                return false; // an unorderable fix (3.0.0-rc1, 1:2.0) may lie above installed
+            }
+            $fixes[] = $fix;
+        }
         if ($fixes === []) {
-            return false; // no comparable fix data — can't conclude
+            return false; // no fix data — can't conclude
         }
 
         foreach ($fixes as $fix) {
-            if (version_compare($fix, $installed, '>')) {
+            if (self::compare($fix, $installed) > 0) {
                 return false; // a fix lies above installed → not yet past it
             }
         }
@@ -220,7 +289,8 @@ final class VersionRange
     /** "Packagist:1.8.0" → "1.8.0"; bare versions pass through. */
     private static function stripEcosystem(string $entry): string
     {
-        return str_contains($entry, ':') ? substr($entry, strpos($entry, ':') + 1) : $entry;
+        // A numeric prefix is a Debian/RPM epoch ("1:0.9"), part of the version.
+        return preg_match('/^[A-Za-z][^:]*:(.+)$/', $entry, $m) ? $m[1] : $entry;
     }
 
     private static function normalise(string $version): string

@@ -7,6 +7,7 @@ namespace Gumslone\Vulns\Sources;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
+use Gumslone\Vulns\Support\BuildsCpeRanges;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\GuzzleException;
@@ -27,6 +28,8 @@ use Psr\SimpleCache\CacheInterface;
  */
 class VulnCheckSource extends AbstractSource
 {
+    use BuildsCpeRanges;
+
     public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
@@ -92,7 +95,7 @@ class VulnCheckSource extends AbstractSource
             throw new \RuntimeException("VulnCheck: fetch of {$vulnId} failed: {$e->getMessage()}", 0, $e);
         }
 
-        $data = json_decode($response->getBody()->getContents(), true);
+        $data = $this->decode($response, "VulnCheck lookup of {$vulnId}");
         $cve = $data['data'][0] ?? null;
 
         return is_array($cve) ? $this->parseCve($cve) : null;
@@ -167,50 +170,5 @@ class VulnCheckSource extends AbstractSource
         }
 
         return [null, null];
-    }
-
-    /**
-     * NVD `configurations` nodes → constraint strings VersionRange can parse
-     * (same shape NvdSource emits), so range evidence merges identically no
-     * matter which of the two NVD-shaped sources delivered the record.
-     *
-     * @return array<int, array{range: string, source: string}>
-     */
-    private function configurationRanges(array $configurations): array
-    {
-        $ranges = [];
-        foreach ($configurations as $config) {
-            foreach ($config['nodes'] ?? [] as $node) {
-                foreach ($node['cpeMatch'] ?? [] as $match) {
-                    if (($match['vulnerable'] ?? true) === false) {
-                        continue;
-                    }
-
-                    $clauses = [];
-                    foreach ([
-                        'versionStartIncluding' => '>=', 'versionStartExcluding' => '>',
-                        'versionEndIncluding' => '<=', 'versionEndExcluding' => '<',
-                    ] as $key => $op) {
-                        if (isset($match[$key])) {
-                            $clauses[] = "{$op} {$match[$key]}";
-                        }
-                    }
-
-                    if ($clauses === []) {
-                        // Exact version pinned in the CPE itself?
-                        $cpeVersion = explode(':', (string) ($match['criteria'] ?? ''))[5] ?? '*';
-                        if ($cpeVersion !== '*' && $cpeVersion !== '-' && $cpeVersion !== '') {
-                            $clauses[] = "= {$cpeVersion}";
-                        }
-                    }
-
-                    if ($clauses !== []) {
-                        $ranges[] = ['range' => implode(', ', $clauses), 'source' => $this->name()];
-                    }
-                }
-            }
-        }
-
-        return $ranges;
     }
 }

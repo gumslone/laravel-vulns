@@ -8,9 +8,10 @@ use Gumslone\Vulns\Contracts\CpeLookup;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
+use Gumslone\Vulns\Support\BuildsCpeRanges;
 use Gumslone\Vulns\Support\CpeResolver;
 use Gumslone\Vulns\Support\ResolvesLookupCpe;
-use Gumslone\Vulns\Support\Version;
+use Gumslone\Vulns\Support\VersionRange;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Psr\Log\LoggerInterface;
@@ -24,6 +25,7 @@ use Psr\SimpleCache\CacheInterface;
  */
 class NvdSource extends AbstractSource
 {
+    use BuildsCpeRanges;
     use ResolvesLookupCpe;
 
     private ?string $apiKey;
@@ -67,12 +69,12 @@ class NvdSource extends AbstractSource
                 $response = $this->http->get('cves/2.0', [
                     'query' => ['virtualMatchString' => $this->matchString($cpe), 'startIndex' => $startIndex],
                 ]);
-                $data = json_decode($response->getBody()->getContents(), true);
+                $data = $this->decode($response, "NVD query for {$package->name}");
 
                 $items = $data['vulnerabilities'] ?? [];
                 foreach ($items as $item) {
                     $vuln = $this->parseCve($item['cve'] ?? []);
-                    if ($vuln && $this->versionIsAffected($item['cve'] ?? [], $package)) {
+                    if ($vuln && $this->versionIsAffected($item['cve'] ?? [], $package, $cpe)) {
                         $vulns[] = $vuln;
                     }
                 }
@@ -84,7 +86,7 @@ class NvdSource extends AbstractSource
                     return $vulns;
                 }
             }
-        } catch (GuzzleException $e) {
+        } catch (GuzzleException|\RuntimeException $e) {
             $this->log('warning', '[vulns] NVD query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
 
             // Fail safe: an unreachable NVD must surface as an error the
@@ -92,10 +94,7 @@ class NvdSource extends AbstractSource
             throw new \RuntimeException("NVD query failed for {$package->name}: {$e->getMessage()}", 0, $e);
         }
 
-        $this->log('warning', '[vulns] NVD pagination cap reached — results truncated', [
-            'package' => $package->name,
-            'fetched' => $startIndex,
-        ]);
+        $this->warn("results for {$package->name} truncated at {$startIndex} CVEs (max_pages={$maxPages})");
 
         return $vulns;
     }
@@ -121,12 +120,17 @@ class NvdSource extends AbstractSource
             $this->throttle();
 
             $response = $this->http->get('cves/2.0', ['query' => ['cveId' => $vulnId]]);
-            $data = json_decode($response->getBody()->getContents(), true);
+            $data = $this->decode($response, "NVD lookup of {$vulnId}");
             $cve = $data['vulnerabilities'][0]['cve'] ?? null;
 
             return $cve ? $this->parseCve($cve) : null;
-        } catch (GuzzleException) {
-            return null;
+        } catch (GuzzleException $e) {
+            if (self::isNotFound($e)) {
+                return null;
+            }
+
+            // Fail safe: a rate-limited or unreachable NVD is not "unknown CVE".
+            throw new \RuntimeException("NVD lookup failed for {$vulnId}: {$e->getMessage()}", 0, $e);
         }
     }
 
@@ -190,72 +194,26 @@ class NvdSource extends AbstractSource
      * Check the CVE `configurations` node to determine whether the package
      * version falls inside any affected CPE match range.
      */
-    private function versionIsAffected(array $cve, PackageData $package): bool
+    private function versionIsAffected(array $cve, PackageData $package, ?string $lookupCpe = null): bool
     {
-        $configurations = $cve['configurations'] ?? [];
-        if (! $configurations || ! $package->version) {
-            return true; // no version data — keep and let assessment decide
+        if (! $package->version) {
+            return true; // no version to judge — keep and let assessment decide
         }
 
-        $version = Version::normalize($package->version);
+        $ranges = $this->configurationRanges($cve['configurations'] ?? []);
 
-        foreach ($configurations as $config) {
-            foreach ($config['nodes'] ?? [] as $node) {
-                foreach ($node['cpeMatch'] ?? [] as $match) {
-                    if (! ($match['vulnerable'] ?? false)) {
-                        continue;
-                    }
+        // Judge by the queried product's own ranges: a sibling product's
+        // "< 9.0.0" says nothing about this one. (When no vulnerable match
+        // names it — a platform-only match — every range is considered.)
+        $cpe = $lookupCpe !== null ? $this->cpeResolver->parse23($lookupCpe) : [];
+        $product = strtolower(($cpe['vendor'] ?? '').':'.($cpe['product'] ?? ''));
+        $own = array_values(array_filter($ranges, fn (array $r) => $r['product'] === $product));
 
-                    $cpeVersion = $this->cpeResolver->parse23($match['criteria'] ?? '')['version'] ?? '*';
-
-                    // Exact version in the CPE itself
-                    if ($cpeVersion !== '*' && $cpeVersion !== '-') {
-                        if ($this->looseVersionEquals($version, $cpeVersion)) {
-                            return true;
-                        }
-
-                        continue;
-                    }
-
-                    // Range bounds
-                    if (isset($match['versionStartIncluding']) && version_compare($version, $match['versionStartIncluding'], '<')) {
-                        continue;
-                    }
-                    if (isset($match['versionStartExcluding']) && version_compare($version, $match['versionStartExcluding'], '<=')) {
-                        continue;
-                    }
-                    if (isset($match['versionEndIncluding']) && version_compare($version, $match['versionEndIncluding'], '>')) {
-                        continue;
-                    }
-                    if (isset($match['versionEndExcluding']) && version_compare($version, $match['versionEndExcluding'], '>=')) {
-                        continue;
-                    }
-
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Version equality that treats trailing-zero differences as equal, so a
-     * CPE pinned at "1.0" matches a package at "1.0.0" (version_compare alone
-     * reports those as different and would miss the CVE).
-     */
-    private function looseVersionEquals(string $a, string $b): bool
-    {
-        $trim = function (string $v): array {
-            $parts = explode('.', $v);
-            while (count($parts) > 1 && end($parts) === '0') {
-                array_pop($parts);
-            }
-
-            return $parts;
-        };
-
-        return $trim($a) === $trim($b);
+        // VersionRange is fail-safe where raw version_compare is not: it
+        // refuses to order "1.1.1k" or "5.3.0.RELEASE" rather than sort them
+        // below the bound and clear a vulnerable package. Only a provable
+        // "outside every range" drops the CVE.
+        return VersionRange::isVulnerable($package->version, $own ?: $ranges) !== false;
     }
 
     private function extractCvssV3(array $metrics): array
@@ -315,52 +273,6 @@ class NvdSource extends AbstractSource
      * Naive fixed-window throttle honouring NVD rate limits
      * (5/30s anonymous, 50/30s with key). Uses the cache as shared state.
      */
-    /**
-     * NVD `configurations` nodes → constraint strings VersionRange can parse
-     * (['range' => '>= 1.0, <= 2.4.7']). Raw NVD nodes are useless to range
-     * matching downstream; a cpeMatch with an exact version becomes '= x',
-     * and a wildcard match without bounds is dropped (no evidence).
-     *
-     * @return array<int, array{range: string, source: string}>
-     */
-    private function configurationRanges(array $configurations): array
-    {
-        $ranges = [];
-        foreach ($configurations as $config) {
-            foreach ($config['nodes'] ?? [] as $node) {
-                foreach ($node['cpeMatch'] ?? [] as $match) {
-                    if (($match['vulnerable'] ?? true) === false) {
-                        continue;
-                    }
-
-                    $clauses = [];
-                    foreach ([
-                        'versionStartIncluding' => '>=', 'versionStartExcluding' => '>',
-                        'versionEndIncluding' => '<=', 'versionEndExcluding' => '<',
-                    ] as $key => $op) {
-                        if (isset($match[$key])) {
-                            $clauses[] = "{$op} {$match[$key]}";
-                        }
-                    }
-
-                    if ($clauses === []) {
-                        // Exact version pinned in the CPE itself?
-                        $cpeVersion = explode(':', (string) ($match['criteria'] ?? ''))[5] ?? '*';
-                        if ($cpeVersion !== '*' && $cpeVersion !== '-' && $cpeVersion !== '') {
-                            $clauses[] = "= {$cpeVersion}";
-                        }
-                    }
-
-                    if ($clauses !== []) {
-                        $ranges[] = ['range' => implode(', ', $clauses), 'source' => 'nvd'];
-                    }
-                }
-            }
-        }
-
-        return $ranges;
-    }
-
     private function throttle(): void
     {
         $window = (int) $this->config('rate_limit_window', 30);

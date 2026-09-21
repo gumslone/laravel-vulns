@@ -30,4 +30,21 @@ final class Version
 
         return preg_match('/^\d+(\.\d+)*$/', $version) ? $version : null;
     }
+
+    /**
+     * version_compare on two comparable() versions with the shorter side
+     * zero-padded, so 1.0 equals 1.0.0 (unpadded, PHP orders 1.0 BELOW
+     * 1.0.0 — which would put a vulnerable "1.0" outside ">= 1.0.0").
+     */
+    public static function compare(string $a, string $b): int
+    {
+        $pa = explode('.', $a);
+        $pb = explode('.', $b);
+        $length = max(count($pa), count($pb));
+
+        return version_compare(
+            implode('.', array_pad($pa, $length, '0')),
+            implode('.', array_pad($pb, $length, '0')),
+        );
+    }
 }

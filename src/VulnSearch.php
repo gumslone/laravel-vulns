@@ -9,6 +9,7 @@ use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Enrichment\ThreatEnricher;
 use Gumslone\Vulns\Sources\AbstractSource;
+use Gumslone\Vulns\Support\VersionRange;
 
 /**
  * Queries every enabled source and merges the answers.
@@ -50,6 +51,7 @@ class VulnSearch
         ?array $priority = null,
         private readonly bool $preferLatest = false,
         private readonly ?ThreatEnricher $enricher = null,
+        private readonly bool $filterByVersion = true,
     ) {
         $this->priority = array_values(array_map('strtolower', $priority ?? self::DEFAULT_PRIORITY));
     }
@@ -81,7 +83,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => in_array($s->name(), $wanted, true),
-        )), $this->priority, $this->preferLatest, $this->enricher);
+        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion);
     }
 
     /**
@@ -97,7 +99,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => ! in_array($s->name(), $unwanted, true),
-        )), $this->priority, $this->preferLatest, $this->enricher);
+        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion);
     }
 
     /**
@@ -110,7 +112,7 @@ class VulnSearch
      */
     public function prioritize(string|array $names): self
     {
-        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher);
+        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher, $this->filterByVersion);
     }
 
     /**
@@ -121,7 +123,7 @@ class VulnSearch
      */
     public function preferLatest(bool $prefer = true): self
     {
-        return new self($this->sources, $this->priority, $prefer, $this->enricher);
+        return new self($this->sources, $this->priority, $prefer, $this->enricher, $this->filterByVersion);
     }
 
     /**
@@ -130,7 +132,19 @@ class VulnSearch
      */
     public function withEnricher(?ThreatEnricher $enricher): self
     {
-        return new self($this->sources, $this->priority, $this->preferLatest, $enricher);
+        return new self($this->sources, $this->priority, $this->preferLatest, $enricher, $this->filterByVersion);
+    }
+
+    /**
+     * A copy that keeps (or drops) advisories the package's version provably
+     * escapes. On by default: several feeds answer by package NAME alone
+     * (GitHub, CVE-Search, Shodan), so without it a fully patched package is
+     * flagged for every advisory its name ever had. Only a provable miss is
+     * dropped — a range that can't be read or ordered keeps the advisory.
+     */
+    public function filterByVersion(bool $filter = true): self
+    {
+        return new self($this->sources, $this->priority, $this->preferLatest, $this->enricher, $filter);
     }
 
     /**
@@ -256,6 +270,9 @@ class VulnSearch
             // try: supports() may consult a curated CPE catalog, and a
             // catalog outage is this source failing, not the search aborting.
             $applicable = array_keys($packages);
+            if ($source instanceof AbstractSource) {
+                $source->resetWarnings();
+            }
             try {
                 if ($source instanceof AbstractSource) {
                     $applicable = [];
@@ -270,11 +287,20 @@ class VulnSearch
 
                 foreach ($source->queryBatch($packages) as $key => $vulns) {
                     if (array_key_exists($key, $results)) {
-                        $results[$key] = array_merge($results[$key], $vulns);
+                        $results[$key] = array_merge($results[$key], $this->affecting($packages[$key], $vulns));
                     }
                 }
+
+                // Partial trouble — one package's lookup failed or was cut
+                // short while the rest stood: the results are kept, the gap
+                // is reported, and those packages don't count as covered.
+                $incomplete = [];
+                if ($source instanceof AbstractSource && $source->warnings() !== []) {
+                    $this->errors[$source->name()] = implode('; ', $source->warnings());
+                    $incomplete = $source->incompleteKeys();
+                }
                 foreach ($applicable as $key) {
-                    $this->coverage[$key]['queried'][] = $source->name();
+                    $this->coverage[$key][in_array($key, $incomplete, true) ? 'failed' : 'queried'][] = $source->name();
                 }
             } catch (\Throwable $e) {
                 $this->errors[$source->name()] = $e->getMessage();
@@ -289,6 +315,25 @@ class VulnSearch
         }
 
         return $this->enrich(array_map($this->merge(...), $results));
+    }
+
+    /**
+     * The advisories that may affect the package's version: only a provable
+     * "outside every range that speaks about this package" drops one.
+     *
+     * @param  VulnerabilityData[]  $vulns
+     * @return VulnerabilityData[]
+     */
+    private function affecting(PackageData $package, array $vulns): array
+    {
+        if (! $this->filterByVersion || $package->version === null || trim($package->version) === '') {
+            return $vulns;
+        }
+
+        return array_values(array_filter($vulns, fn (VulnerabilityData $vuln) => VersionRange::isVulnerable(
+            $package->version,
+            VersionRange::relevantTo($vuln->affectedRanges, $package->name),
+        ) !== false));
     }
 
     /**
@@ -324,6 +369,7 @@ class VulnSearch
         // errors() reports the most recent operation only — without the reset
         // a stale failure from an earlier search would taint this lookup.
         $this->errors = [];
+        $this->coverage = [];
         $found = [];
 
         foreach ($this->sources as $source) {
@@ -414,11 +460,27 @@ class VulnSearch
      */
     private function merge(array $vulns): array
     {
+        // Records describe the same advisory when they share ANY id — not
+        // only a CVE: OSV may know GHSA-x as an alias of CVE-1 while GitHub's
+        // GHSA-x record has no CVE yet and Snyk only cites the GHSA. Group
+        // transitively (union-find over ids + aliases), then merge a group.
+        $parent = [];
+        $find = function (string $id) use (&$parent, &$find): string {
+            $parent[$id] ??= $id;
+
+            return $parent[$id] === $id ? $id : $parent[$id] = $find($parent[$id]);
+        };
+        foreach ($vulns as $vuln) {
+            $root = $find(strtoupper($vuln->vulnId));
+            foreach ($vuln->aliases as $alias) {
+                $parent[$find(strtoupper($alias))] = $root;
+            }
+        }
+
         /** @var array<string, VulnerabilityData> $byId */
         $byId = [];
-
         foreach ($vulns as $vuln) {
-            $key = $vuln->canonicalId();
+            $key = $find(strtoupper($vuln->vulnId));
             $byId[$key] = isset($byId[$key]) ? $this->mergePair($byId[$key], $vuln) : $vuln;
         }
 
@@ -507,10 +569,12 @@ class VulnSearch
             affectedEcosystems: $base->affectedEcosystems ?: $other->affectedEcosystems,
             // Version evidence is the scarcest signal — keep whichever has it.
             affectedRanges: $base->affectedRanges ?: $other->affectedRanges,
-            references: $base->references ?: $other->references,
-            cwes: $base->cwes ?: $other->cwes,
+            // Pooled, the base's first: an EXPLOIT link or a fix only one feed
+            // knows about must survive whichever record wins the merge.
+            references: self::poolReferences($base->references, $other->references),
+            cwes: array_values(array_unique(array_merge($base->cwes, $other->cwes))),
             isFixed: $base->isFixed || $other->isFixed,
-            fixedVersions: $base->fixedVersions ?: $other->fixedVersions,
+            fixedVersions: self::poolFixes($base->fixedVersions, $other->fixedVersions),
             remediationAdvice: $base->remediationAdvice ?? $other->remediationAdvice,
             sourcePublishedAt: $base->sourcePublishedAt ?? $other->sourcePublishedAt,
             sourceModifiedAt: $base->sourceModifiedAt ?? $other->sourceModifiedAt,
@@ -520,6 +584,46 @@ class VulnSearch
             // has already stored a (shorter) source_urls in the base's extra.
             extra: ['source_urls' => $sourceUrls] + $base->extra + $other->extra,
         );
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>|string>  $a
+     * @param  array<int, array<string, mixed>|string>  $b
+     * @return array<int, array<string, mixed>|string> unique by URL; a typed entry beats an untyped duplicate
+     */
+    private static function poolReferences(array $a, array $b): array
+    {
+        $byUrl = [];
+        foreach (array_merge($a, $b) as $ref) {
+            $url = is_array($ref) ? (string) ($ref['url'] ?? '') : (string) $ref;
+            $key = $url !== '' ? rtrim(strtolower($url), '/') : 'ref#'.count($byUrl);
+            if (! isset($byUrl[$key]) || (is_array($ref) && ! empty($ref['type']) && (! is_array($byUrl[$key]) || empty($byUrl[$key]['type'])))) {
+                $byUrl[$key] = $ref;
+            }
+        }
+
+        return array_values($byUrl);
+    }
+
+    /**
+     * @param  string[]  $a
+     * @param  string[]  $b
+     * @return string[] unique by bare version ("Packagist:1.2.0" and "1.2.0" are one fix)
+     */
+    private static function poolFixes(array $a, array $b): array
+    {
+        $bare = fn (string $fix): string => strtolower(ltrim((string) preg_replace('/^[A-Za-z][^:]*:/', '', trim($fix)), 'vV'));
+        $seen = [];
+        $fixes = [];
+        foreach (array_merge($a, $b) as $fix) {
+            $fix = (string) $fix;
+            if ($fix !== '' && ! isset($seen[$bare($fix)])) {
+                $seen[$bare($fix)] = true;
+                $fixes[] = $fix;
+            }
+        }
+
+        return $fixes;
     }
 
     /**

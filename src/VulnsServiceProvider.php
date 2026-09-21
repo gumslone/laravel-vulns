@@ -103,6 +103,7 @@ class VulnsServiceProvider extends ServiceProvider
             config('vulns.priority'),
             config('vulns.merge', 'priority') === 'latest',
             $app->make(ThreatEnricher::class),
+            (bool) config('vulns.version_filter', true),
         ));
     }
 

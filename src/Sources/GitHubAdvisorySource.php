@@ -104,6 +104,7 @@ class GitHubAdvisorySource extends AbstractSource
         // key => cursor of the next page to fetch (null = first page)
         $hasToken = (bool) $this->config('token');
         $pending = [];
+        $repoFailures = [];
         foreach ($packages as $key => $package) {
             if (isset(self::ECOSYSTEM_MAP[$package->ecosystem])) {
                 // The registry GraphQL feed requires authentication.
@@ -115,8 +116,25 @@ class GitHubAdvisorySource extends AbstractSource
                 // repository) aren't on any registry — but their repos can
                 // publish REPOSITORY security advisories, which never appear
                 // in the registry-scoped GraphQL feed (or OSV).
-                $results[$key] = $this->repoAdvisories($package);
+                try {
+                    $results[$key] = $this->repoAdvisories($package, $key);
+                } catch (\RuntimeException $e) {
+                    $repoFailures[$key] = $e->getMessage();
+                }
             }
+        }
+
+        // A rate-limited (403) or failing repository lookup is that package's
+        // lookup failing — never "this repo has no advisories". With nothing
+        // else in the batch it is the source failing outright.
+        if ($repoFailures !== []) {
+            if (count($repoFailures) === count($packages)) {
+                throw new \RuntimeException(reset($repoFailures));
+            }
+            $this->warn(
+                sprintf('repository advisory lookup failed for %d package(s): %s', count($repoFailures), reset($repoFailures)),
+                [], array_keys($repoFailures),
+            );
         }
 
         // GitHub's GraphQL API returns HTTP 200 with a top-level `errors` array
@@ -130,6 +148,7 @@ class GitHubAdvisorySource extends AbstractSource
         $failed = 0;
         $requested = 0;
         $firstReason = null;
+        $registryKeys = array_keys($pending);
 
         // Each round fetches one page per pending package concurrently;
         // packages with further pages carry their cursor into the next round.
@@ -144,7 +163,7 @@ class GitHubAdvisorySource extends AbstractSource
                             'query' => self::VULNERABILITIES_QUERY,
                             'variables' => [
                                 'ecosystem' => self::ECOSYSTEM_MAP[$package->ecosystem],
-                                'package' => $package->name,
+                                'package' => $package->registryName(),
                                 'cursor' => $cursor,
                             ],
                         ],
@@ -155,10 +174,16 @@ class GitHubAdvisorySource extends AbstractSource
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
                 'fulfilled' => function ($response, $key) use (&$results, &$next, &$graphqlErrors, $packages) {
-                    $data = json_decode($response->getBody()->getContents(), true) ?? [];
+                    $data = json_decode($response->getBody()->getContents(), true);
 
-                    if (! empty($data['errors'])) {
-                        $graphqlErrors[] = $data['errors'][0]['type'] ?? ($data['errors'][0]['message'] ?? 'unknown GraphQL error');
+                    // A GraphQL error (RATE_LIMITED, …) or an unreadable body
+                    // leaves THIS package's lookup incomplete — on page 1 or
+                    // page N alike. It is attributed to the package so it
+                    // can't read as clean while the rest of the batch stands.
+                    if (! is_array($data) || ! empty($data['errors'])) {
+                        $graphqlErrors[$key] = is_array($data)
+                            ? (string) ($data['errors'][0]['type'] ?? ($data['errors'][0]['message'] ?? 'unknown GraphQL error'))
+                            : 'response was not valid JSON';
 
                         return;
                     }
@@ -198,16 +223,19 @@ class GitHubAdvisorySource extends AbstractSource
             ));
         }
 
-        // Surface a GraphQL-level failure (rate limit, bad query) so the
-        // aggregator records it against the scan — but only throw when NOTHING
-        // succeeded, so a transient error on one page doesn't discard the valid
-        // advisories already collected for the rest of the batch.
+        // A GraphQL-level failure (rate limit, bad query): when nothing at all
+        // succeeded the source failed; otherwise keep the advisories already
+        // collected and flag exactly the packages whose lookup is incomplete.
         if ($graphqlErrors !== []) {
-            $anyResults = array_sum(array_map('count', $results)) > 0;
-            if (! $anyResults) {
-                throw new \RuntimeException('GitHub GraphQL error: '.implode(', ', array_unique($graphqlErrors)));
+            $reasons = implode(', ', array_unique($graphqlErrors));
+            if (count($graphqlErrors) >= count($registryKeys) && array_sum(array_map('count', $results)) === 0) {
+                throw new \RuntimeException('GitHub GraphQL error: '.$reasons);
             }
-            $this->log('warning', '[vulns] GitHub Advisory partial failure', ['errors' => array_unique($graphqlErrors)]);
+            $this->warn(
+                sprintf('GraphQL error for %d package(s): %s — their results are incomplete', count($graphqlErrors), $reasons),
+                ['packages' => array_map(fn ($key) => $packages[$key]->name, array_keys($graphqlErrors))],
+                array_keys($graphqlErrors),
+            );
         }
 
         return $results;
@@ -215,7 +243,9 @@ class GitHubAdvisorySource extends AbstractSource
 
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
-        if (! str_starts_with($vulnId, 'GHSA-')) {
+        // The GraphQL feed needs a token; without one this source can't look
+        // an advisory up at all, which is "not covered", not a failure.
+        if (! str_starts_with($vulnId, 'GHSA-') || ! $this->config('token')) {
             return null;
         }
 
@@ -241,11 +271,21 @@ class GitHubAdvisorySource extends AbstractSource
                 ['ghsaId' => $vulnId],
             );
 
+            if (! empty($data['errors']) && ! isset($data['data']['securityAdvisory'])) {
+                $type = (string) ($data['errors'][0]['type'] ?? '');
+                if ($type === 'NOT_FOUND') {
+                    return null;
+                }
+
+                throw new \RuntimeException('GitHub GraphQL error: '.($type ?: ($data['errors'][0]['message'] ?? 'unknown')));
+            }
+
             $advisory = $data['data']['securityAdvisory'] ?? null;
 
             return $advisory ? $this->parseAdvisory($advisory, [], null) : null;
-        } catch (GuzzleException) {
-            return null;
+        } catch (GuzzleException $e) {
+            // Fail safe: "GitHub is down / rate-limiting" ≠ "unknown advisory".
+            throw new \RuntimeException("GitHub advisory lookup failed for {$vulnId}: {$e->getMessage()}", 0, $e);
         }
     }
 
@@ -257,7 +297,7 @@ class GitHubAdvisorySource extends AbstractSource
      *
      * @return VulnerabilityData[]
      */
-    private function repoAdvisories(PackageData $package): array
+    private function repoAdvisories(PackageData $package, int|string|null $key = null): array
     {
         // Encode owner and repo individually — the '/' between them is a real
         // path separator, but anything inside a segment must not be able to
@@ -272,7 +312,7 @@ class GitHubAdvisorySource extends AbstractSource
         try {
             for ($page = 0; $path !== null && $page < $maxPages; $page++) {
                 $response = $this->http->get($path);
-                $advisories = array_merge($advisories, json_decode($response->getBody()->getContents(), true) ?? []);
+                $advisories = array_merge($advisories, $this->decode($response, "GitHub repository advisories for {$package->name}"));
 
                 // RFC 5988 Link header: follow rel="next" until absent.
                 $path = preg_match('/<([^>]+)>;\s*rel="next"/', $response->getHeaderLine('Link'), $m)
@@ -280,17 +320,19 @@ class GitHubAdvisorySource extends AbstractSource
                     : null;
             }
         } catch (GuzzleException $e) {
+            // 404: no such repository (or it is private) — a real "nothing".
+            if (self::isNotFound($e)) {
+                return [];
+            }
             $this->log('warning', '[vulns] GitHub repo-advisory query failed', [
                 'repo' => $package->name, 'error' => $e->getMessage(),
             ]);
 
-            return [];
+            throw new \RuntimeException("GitHub repository advisory query failed for {$package->name}: {$e->getMessage()}", 0, $e);
         }
 
         if ($path !== null) {
-            $this->log('warning', '[vulns] GitHub repo-advisory pagination cap reached — results truncated', [
-                'repo' => $package->name,
-            ]);
+            $this->warn("repository advisories for {$package->name} truncated at {$maxPages} pages", [], $key === null ? [] : [$key]);
         }
 
         $vulns = [];
@@ -343,7 +385,7 @@ class GitHubAdvisorySource extends AbstractSource
             'json' => ['query' => $query, 'variables' => $variables],
         ]);
 
-        return json_decode($response->getBody()->getContents(), true) ?? [];
+        return $this->decode($response, 'GitHub GraphQL');
     }
 
     private function parseNode(array $node, string $ecosystem): ?VulnerabilityData

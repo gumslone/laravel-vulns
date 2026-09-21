@@ -103,6 +103,10 @@ class CpeResolver
         // Strip namespace/scope prefix
         $parts = explode('/', $name);
         $name = end($parts);
+        // Maven "group:artifact" → artifact
+        if (str_contains($name, ':')) {
+            $name = substr($name, strrpos($name, ':') + 1);
+        }
         // Strip npm @ scope
         $name = ltrim($name, '@');
 
@@ -111,7 +115,7 @@ class CpeResolver
 
     private function normaliseVersion(string $version): string
     {
-        return \Gumslone\Vulns\Support\Version::normalize($version);
+        return Version::normalize($version);
     }
 
     /**

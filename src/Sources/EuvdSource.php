@@ -55,84 +55,107 @@ class EuvdSource extends AbstractSource
             $keysByProduct[$package->name][] = $key;
         }
 
-        // The API's documented paging surface isn't reflected anywhere in the
-        // shapes we consume, so request the largest page we know is accepted
-        // and flag a full page as possible truncation instead of guessing at
-        // parameters.
+        // `size` tops out at 100; `page` (0-based) and the response's `total`
+        // walk the rest. A popular product runs to hundreds of records, and
+        // an old installed version is affected by exactly the older ones.
         $pageSize = 100;
+        $maxPages = max(1, (int) $this->config('max_pages', 20));
 
-        $requests = function () use ($keysByProduct, $pageSize) {
-            foreach (array_keys($keysByProduct) as $product) {
-                yield $product => fn () => $this->http->getAsync('search', [
-                    'query' => ['product' => $product, 'size' => $pageSize],
-                ]);
-            }
-        };
-
-        // Fail safe: a rejected request must not read as "no known
-        // vulnerabilities" for its product — collect rejections during the
-        // pool run and throw once the pool has drained.
+        // Fail safe: a rejected or malformed page must not read as "no known
+        // vulnerabilities" for its product — collect failures during the
+        // pool rounds and throw once they have drained.
         $failed = 0;
+        $requested = 0;
         $firstReason = null;
+        $itemsByProduct = array_fill_keys(array_keys($keysByProduct), []);
 
-        $pool = new Pool($this->http, $requests(), [
-            'concurrency' => (int) $this->config('max_concurrency', 8),
-            'fulfilled' => function ($response, $product) use (&$results, &$failed, &$firstReason, $keysByProduct, $packages, $pageSize) {
-                $data = json_decode($response->getBody()->getContents(), true);
-
-                // A 200 whose body isn't the expected JSON (the SPA's HTML
-                // shell, a proxy outage page) is a failed request, not an
-                // authoritative "no vulnerabilities".
-                if (! is_array($data) || ! array_key_exists('items', $data)) {
-                    $failed++;
-                    $firstReason ??= 'malformed response body';
-                    $this->log('warning', '[vulns] EUVD returned a malformed body', ['product' => $product]);
-
-                    return;
-                }
-                $items = $data['items'];
-
-                if (count($items) >= $pageSize) {
-                    $this->log('warning', '[vulns] EUVD returned a full page — results may be truncated', [
-                        'product' => $product,
-                        'size' => $pageSize,
+        $pending = array_fill_keys(array_keys($keysByProduct), 0);
+        while ($pending !== []) {
+            $next = [];
+            $requests = function () use ($pending, $pageSize) {
+                foreach ($pending as $product => $page) {
+                    yield $product => fn () => $this->http->getAsync('search', [
+                        'query' => ['product' => (string) $product, 'size' => $pageSize] + ($page > 0 ? ['page' => $page] : []),
                     ]);
                 }
+            };
 
-                $vulns = array_values(array_filter(array_map(
-                    [$this, 'parseItem'],
-                    $items,
-                )));
+            $pool = new Pool($this->http, $requests(), [
+                'concurrency' => (int) $this->config('max_concurrency', 8),
+                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$next, &$failed, &$firstReason, $pending, $keysByProduct, $pageSize, $maxPages) {
+                    $data = json_decode($response->getBody()->getContents(), true);
 
-                // The search matched by product NAME only; drop advisories the
-                // queried version provably escapes. Fail-safe: an advisory is
-                // only dropped when its ranges for THIS product parsed cleanly
-                // and none matched — unparseable or missing version text keeps
-                // the advisory ("can't tell" must not read as "not affected").
-                foreach ($keysByProduct[$product] as $key) {
-                    $results[$key] = array_values(array_filter(
-                        $vulns,
-                        fn (VulnerabilityData $vuln) => $this->versionMayBeAffected($vuln, $product, $packages[$key]->version),
-                    ));
-                }
-            },
-            'rejected' => function ($reason, $product) use (&$failed, &$firstReason) {
-                $failed++;
-                $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
-                $firstReason ??= $message;
-                $this->log('warning', '[vulns] EUVD query failed', [
-                    'product' => $product,
-                    'error' => $message,
-                ]);
-            },
-        ]);
+                    // A 200 whose body isn't the expected JSON (the SPA's HTML
+                    // shell, a proxy outage page) is a failed request, not an
+                    // authoritative "no vulnerabilities".
+                    if (! is_array($data) || ! array_key_exists('items', $data) || ! is_array($data['items'])) {
+                        $failed++;
+                        $firstReason ??= 'malformed response body';
+                        $this->log('warning', '[vulns] EUVD returned a malformed body', ['product' => $product]);
 
-        $pool->promise()->wait();
+                        return;
+                    }
+
+                    $items = $data['items'];
+                    $itemsByProduct[$product] = array_merge($itemsByProduct[$product], $items);
+
+                    $total = is_numeric($data['total'] ?? null) ? (int) $data['total'] : null;
+                    $more = $total !== null ? count($itemsByProduct[$product]) < $total : count($items) >= $pageSize;
+                    if ($items === [] || ! $more) {
+                        return;
+                    }
+                    if ($maxPages <= $pending[$product] + 1) {
+                        $this->warn(
+                            sprintf('results for "%s" truncated at %d of %s records (max_pages=%d)', $product, count($itemsByProduct[$product]), $total ?? 'unknown', $maxPages),
+                            [], $keysByProduct[$product],
+                        );
+
+                        return;
+                    }
+                    $next[$product] = $pending[$product] + 1;
+                },
+                'rejected' => function ($reason, $product) use (&$failed, &$firstReason) {
+                    $failed++;
+                    $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                    $firstReason ??= $message;
+                    $this->log('warning', '[vulns] EUVD query failed', [
+                        'product' => $product,
+                        'error' => $message,
+                    ]);
+                },
+            ]);
+
+            $requested += count($pending);
+            $pool->promise()->wait();
+            $pending = $next;
+        }
 
         if ($failed > 0) {
             throw new \RuntimeException(sprintf(
-                'EUVD: %d of %d requests failed: %s', $failed, count($keysByProduct), $firstReason,
+                'EUVD: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
+        }
+
+        foreach ($itemsByProduct as $product => $items) {
+            $vulns = [];
+            foreach (array_filter($items, 'is_array') as $item) {
+                $vuln = $this->parseItem($item);
+                if ($vuln !== null) {
+                    $vulns[$vuln->vulnId] ??= $vuln;
+                }
+            }
+
+            // The search matched by product NAME only; drop advisories the
+            // queried version provably escapes. Fail-safe: an advisory is
+            // only dropped when its ranges for THIS product parsed cleanly
+            // and none matched — unparseable or missing version text keeps
+            // the advisory ("can't tell" must not read as "not affected").
+            foreach ($keysByProduct[$product] as $key) {
+                $results[$key] = array_values(array_filter(
+                    $vulns,
+                    fn (VulnerabilityData $vuln) => $this->versionMayBeAffected($vuln, (string) $product, $packages[$key]->version),
+                ));
+            }
         }
 
         return $results;
@@ -142,11 +165,20 @@ class EuvdSource extends AbstractSource
     {
         try {
             $response = $this->http->get('enisaid', ['query' => ['id' => $vulnId]]);
-            $data = json_decode($response->getBody()->getContents(), true);
+            $body = trim((string) $response->getBody());
+            if ($body === '') {
+                return null; // an unknown id answers 200 with an empty body
+            }
+            $data = $this->decode($response, "EUVD lookup of {$vulnId}", allowNull: true);
 
             return $data ? $this->parseItem($data) : null;
-        } catch (GuzzleException) {
-            return null;
+        } catch (GuzzleException $e) {
+            if (self::isNotFound($e)) {
+                return null;
+            }
+
+            // Fail safe: an unreachable EUVD is not "unknown advisory".
+            throw new \RuntimeException("EUVD lookup failed for {$vulnId}: {$e->getMessage()}", 0, $e);
         }
     }
 
@@ -334,11 +366,12 @@ class EuvdSource extends AbstractSource
             return true;
         }
 
-        $needle = strtolower($product);
+        // Word-boundary product match: "express" must not borrow ExpressVPN's
+        // ranges (nor be cleared by them).
         $relevant = array_values(array_filter(
             $vuln->affectedRanges,
             fn ($range) => is_array($range)
-                && str_contains(strtolower((string) ($range['product'] ?? '')), $needle),
+                && VersionRange::sameProduct((string) ($range['product'] ?? ''), $product),
         ));
 
         if ($relevant === []) {

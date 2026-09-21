@@ -8,6 +8,8 @@ use Gumslone\Vulns\Contracts\Source;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Support\RetryHandlerFactory;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
+use Psr\Http\Message\ResponseInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Psr\SimpleCache\CacheInterface;
@@ -33,7 +35,59 @@ abstract class AbstractSource implements Source
     /** @var array<string, mixed> */
     protected array $options = [];
 
+    /** @var string[] non-fatal problems from the current query — results kept, but incomplete */
+    private array $warnings = [];
+
+    /** @var array<int|string, true> */
+    private array $incompleteKeys = [];
+
     abstract public function name(): string;
+
+    /**
+     * Non-fatal problems since the last resetWarnings(): a result cap hit, one
+     * advisory whose details couldn't be fetched. The results returned are
+     * real but may be incomplete — VulnSearch folds these into errors().
+     *
+     * @return string[]
+     */
+    public function warnings(): array
+    {
+        return $this->warnings;
+    }
+
+    /**
+     * Input keys (as passed to queryBatch) whose lookup failed or was cut
+     * short while the rest of the batch succeeded — their results are
+     * incomplete and must not read as "clean".
+     *
+     * @return array<int, int|string>
+     */
+    public function incompleteKeys(): array
+    {
+        return array_keys($this->incompleteKeys);
+    }
+
+    public function resetWarnings(): void
+    {
+        $this->warnings = [];
+        $this->incompleteKeys = [];
+    }
+
+    /**
+     * Record (and log) a non-fatal problem that leaves results incomplete.
+     *
+     * @param  array<int, int|string>  $keys  the queryBatch input keys it concerns, when known
+     */
+    protected function warn(string $message, array $context = [], array $keys = []): void
+    {
+        if (! in_array($message, $this->warnings, true)) {
+            $this->warnings[] = $message;
+        }
+        foreach ($keys as $key) {
+            $this->incompleteKeys[$key] = true;
+        }
+        $this->log('warning', "[vulns] {$this->name()}: {$message}", $context);
+    }
 
     public function isEnabled(): bool
     {
@@ -85,6 +139,36 @@ abstract class AbstractSource implements Source
                 'User-Agent' => self::USER_AGENT,
             ],
         ]);
+    }
+
+    /**
+     * Decode a JSON response body, or throw: a 200 that isn't JSON (a proxy's
+     * HTML error page, a truncated body) is a failed lookup, and reading it
+     * as an empty result would report the package clean.
+     *
+     * @param  bool  $allowNull  accept a literal JSON `null` as "no record" (returns [])
+     * @return array<array-key, mixed>
+     */
+    protected function decode(ResponseInterface $response, string $what, bool $allowNull = false): array
+    {
+        $body = (string) $response->getBody();
+        $data = json_decode($body, true);
+
+        if (is_array($data)) {
+            return $data;
+        }
+        if ($allowNull && $data === null && strtolower(trim($body)) === 'null') {
+            return [];
+        }
+
+        throw new \RuntimeException("{$what}: the response was not valid JSON");
+    }
+
+    /** A 404 is the upstream answering "no such record"; everything else is a failure. */
+    protected static function isNotFound(\Throwable $e): bool
+    {
+        return $e instanceof RequestException
+            && $e->getResponse()?->getStatusCode() === 404;
     }
 
     /** Stable content checksum for change-detection on raw source payloads. */

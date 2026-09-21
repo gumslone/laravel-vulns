@@ -27,7 +27,7 @@ function spyLogger(): AbstractLogger
     {
         public array $records = [];
 
-        public function log($level, string|\Stringable $message, array $context = []): void
+        public function log($level, string|Stringable $message, array $context = []): void
         {
             $this->records[] = ['level' => $level, 'message' => (string) $message, 'context' => $context];
         }
@@ -45,23 +45,35 @@ it('EUVD throws when a pooled request is rejected so the outage is recorded, not
     $source->queryBatch([new PackageData(name: 'curl', version: '7.88.1', ecosystem: 'deb')]);
 })->throws(RuntimeException::class, '1 of 1 requests failed');
 
-it('EUVD requests the maximum page size and flags a full page as possible truncation', function () {
-    $items = array_map(fn (int $i) => ['id' => "EUVD-2024-{$i}", 'description' => 'x'], range(1, 100));
+it('EUVD walks every page (size 100, page N, total) and warns only when the page cap cuts it short', function () {
+    $page = fn (int $from, int $count, int $total) => new Response(200, [], json_encode([
+        'items' => array_map(fn (int $i) => ['id' => "EUVD-2024-{$i}", 'description' => 'x'], range($from, $from + $count - 1)),
+        'total' => $total,
+    ]));
 
     $history = [];
-    $logger = spyLogger();
-    $source = new EuvdSource(new Client(['handler' => failSafeStack([
-        new Response(200, [], json_encode(['items' => $items])),
-    ], $history)]), [], $logger);
-
+    $source = new EuvdSource(new Client(['handler' => failSafeStack([$page(1, 100, 227), $page(101, 100, 227), $page(201, 27, 227)], $history)]));
     $results = $source->queryBatch([new PackageData(name: 'curl', version: '7.88.1', ecosystem: 'deb')]);
 
-    parse_str($history[0]['request']->getUri()->getQuery(), $query);
-    expect($query['size'])->toBe('100')
-        ->and($results[0])->toHaveCount(100);
+    $queries = array_map(function (array $h) {
+        parse_str($h['request']->getUri()->getQuery(), $q);
 
-    $warnings = array_column($logger->records, 'message');
-    expect(implode(' ', $warnings))->toContain('truncated');
+        return $q;
+    }, $history);
+    expect($results[0])->toHaveCount(227)
+        ->and($queries[0]['size'])->toBe('100')
+        ->and($queries[0])->not->toHaveKey('page')
+        ->and($queries[1]['page'])->toBe('1')
+        ->and($queries[2]['page'])->toBe('2')
+        ->and($source->warnings())->toBe([]);
+
+    // Cut short by max_pages: results kept, but flagged against the package.
+    $history = [];
+    $capped = new EuvdSource(new Client(['handler' => failSafeStack([$page(1, 100, 227)], $history)]), ['max_pages' => 1]);
+    $results = $capped->queryBatch(['pkg' => new PackageData(name: 'curl', version: '7.88.1', ecosystem: 'deb')]);
+    expect($results['pkg'])->toHaveCount(100)
+        ->and($capped->warnings()[0])->toContain('truncated at 100 of 227')
+        ->and($capped->incompleteKeys())->toBe(['pkg']);
 });
 
 // ---------------------------------------------------------- CVE-Search

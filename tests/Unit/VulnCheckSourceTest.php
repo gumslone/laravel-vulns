@@ -80,7 +80,7 @@ it('queries the nist-nvd2 index by CVE id with a Bearer token and maps the recor
         ->and($vuln->cvssV2Score)->toBe(9.3)
         ->and($vuln->severity)->toBe(Severity::Critical)
         ->and($vuln->cwes)->toBe(['CWE-502'])
-        ->and($vuln->affectedRanges)->toBe([['range' => '>= 2.0.1, < 2.15.0', 'source' => 'vulncheck']])
+        ->and($vuln->affectedRanges)->toBe([['range' => '>= 2.0.1, < 2.15.0', 'product' => 'apache:log4j', 'source' => 'vulncheck']])
         ->and($vuln->sourcePublishedAt->format('Y-m-d'))->toBe('2021-12-10')
         ->and($vuln->extra['vuln_status'])->toBe('Analyzed');
 });

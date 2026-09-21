@@ -65,8 +65,8 @@ class OsvSource extends AbstractSource
         do {
             try {
                 $response = $this->http->post('v1/query', ['json' => $payload]);
-                $data = json_decode($response->getBody()->getContents(), true);
-            } catch (GuzzleException $e) {
+                $data = $this->decode($response, 'OSV query');
+            } catch (GuzzleException|\RuntimeException $e) {
                 $this->log('warning', '[vulns] OSV query failed', ['package' => $package->name, 'error' => $e->getMessage()]);
 
                 // Fail safe: an unreachable feed must surface as an error the
@@ -112,8 +112,8 @@ class OsvSource extends AbstractSource
                     $response = $this->http->post('v1/querybatch', [
                         'json' => ['queries' => array_values($pending)],
                     ]);
-                    $data = json_decode($response->getBody()->getContents(), true);
-                } catch (GuzzleException $e) {
+                    $data = $this->decode($response, 'OSV batch query');
+                } catch (GuzzleException|\RuntimeException $e) {
                     $this->log('warning', '[vulns] OSV batch query failed', ['error' => $e->getMessage()]);
 
                     // Fail safe: swallowing this would report every package in
@@ -195,6 +195,7 @@ class OsvSource extends AbstractSource
             return $vulns;
         }
 
+        $failed = [];
         $requests = function () use ($misses) {
             foreach ($misses as $id) {
                 yield $id => fn () => $this->http->getAsync('v1/vulns/'.rawurlencode($id));
@@ -203,24 +204,43 @@ class OsvSource extends AbstractSource
 
         $pool = new Pool($this->http, $requests(), [
             'concurrency' => (int) $this->config('max_concurrency', 8),
-            'fulfilled' => function ($response, string $id) use (&$vulns, $modifiedById, $ttl) {
-                $data = json_decode($response->getBody()->getContents(), true) ?? [];
-                if ($vuln = $this->parseVuln($data)) {
-                    $vulns[$id] = $vuln;
-                    if ($ttl > 0) {
-                        $this->cache?->set($this->cacheKey($id, $modifiedById[$id]), $data, $ttl);
-                    }
+            'fulfilled' => function ($response, string $id) use (&$vulns, &$failed, $modifiedById, $ttl) {
+                $data = json_decode($response->getBody()->getContents(), true);
+                if (! is_array($data) || ! ($vuln = $this->parseVuln($data))) {
+                    $failed[$id] = 'unreadable advisory payload';
+
+                    return;
+                }
+                $vulns[$id] = $vuln;
+                if ($ttl > 0) {
+                    $this->cache?->set($this->cacheKey($id, $modifiedById[$id]), $data, $ttl);
                 }
             },
-            'rejected' => function ($reason, string $id) {
-                $this->log('warning', '[vulns] OSV vulnerability hydration failed', [
-                    'vuln_id' => $id,
-                    'error' => $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason,
-                ]);
+            'rejected' => function ($reason, string $id) use (&$failed) {
+                $failed[$id] = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
             },
         ]);
 
         $pool->promise()->wait();
+
+        // querybatch already established that these advisories affect the
+        // package — only their details are missing. Dropping them would
+        // report a vulnerable package clean, so keep an id-only record
+        // (other sources usually fill it in the merge) and flag the gap.
+        foreach ($failed as $id => $error) {
+            $vulns[$id] = new VulnerabilityData(
+                vulnId: $id,
+                source: 'osv',
+                sourceModifiedAt: self::date($modifiedById[$id] ?? null),
+                extra: ['details_unavailable' => true],
+            );
+        }
+        if ($failed !== []) {
+            $this->warn(sprintf(
+                'details unavailable for %d advisor%s (%s) — listed by id only',
+                count($failed), count($failed) === 1 ? 'y' : 'ies', implode(', ', array_slice(array_keys($failed), 0, 5)),
+            ), ['errors' => $failed]);
+        }
 
         return $vulns;
     }
@@ -236,10 +256,23 @@ class OsvSource extends AbstractSource
     {
         try {
             $response = $this->http->get('v1/vulns/'.rawurlencode($vulnId));
-            $data = json_decode($response->getBody()->getContents(), true);
 
-            return $this->parseVuln($data);
-        } catch (GuzzleException) {
+            return $this->parseVuln($this->decode($response, "OSV lookup of {$vulnId}"));
+        } catch (GuzzleException $e) {
+            if (self::isNotFound($e)) {
+                return null;
+            }
+
+            // Fail safe: "OSV is down" must not read as "OSV doesn't know it".
+            throw new \RuntimeException("OSV lookup failed for {$vulnId}: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    private static function date(?string $value): ?\DateTime
+    {
+        try {
+            return $value ? new \DateTime($value) : null;
+        } catch (\Exception) {
             return null;
         }
     }
@@ -384,7 +417,7 @@ class OsvSource extends AbstractSource
         return [
             'version' => $package->version,
             'package' => [
-                'name' => $package->name,
+                'name' => $package->registryName(),
                 'ecosystem' => $this->mapEcosystem($package->ecosystem),
             ],
         ];

@@ -1,6 +1,8 @@
 # laravel-vulns
 
 [![CI](https://github.com/gumslone/laravel-vulns/actions/workflows/ci.yml/badge.svg)](https://github.com/gumslone/laravel-vulns/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/donate/?hosted_button_id=VCWHQPACTXV5N)
 
 Multi-source vulnerability lookups for PHP — eleven production sources behind
 one contract, with CVSS v2/v3/**v4** scoring, **EPSS** + **CISA KEV** threat
@@ -85,9 +87,11 @@ foreach ($vulns as $v) {
 }
 ```
 
-Results are **merged across sources** by canonical id (the CVE when any source
-knows one), aliases pooled, and the richest field kept — OSV's version ranges
-plus NVD's CVSS score end up on the same record, sorted by score.
+Results are **merged across sources**: records that share *any* id — directly
+or through aliases (GHSA ↔ CVE ↔ SNYK) — are one advisory, shown under its CVE
+when a record carries one. Aliases, references, CWEs and fixed versions are
+pooled and the richest field kept — OSV's version ranges plus NVD's CVSS score
+and exploit links end up on the same record, sorted by score.
 
 A source that fails does **not** abort the search; check `errors()` so an
 unreachable feed reads as "possibly incomplete", never as "clean":
@@ -240,6 +244,33 @@ $search->coverage()['lodash'];
 
 Nothing queried is "not covered", not "clean" — treat it like `errors()`.
 
+`failed` also covers *partial* trouble: a source that answered for the rest of
+the batch but hit a GraphQL rate limit on this one package, could not fetch
+one advisory's details, or stopped at its `max_pages` cap. Its results are
+kept, the reason lands in `errors()`, and the package does not count as
+covered. (Calling a source directly? The same information is on
+`$source->warnings()` and `$source->incompleteKeys()`.)
+
+### Version filtering
+
+GitHub, CVE-Search and Shodan answer by package **name** — every advisory the
+name ever had, whatever version you run. `VulnSearch` therefore drops
+advisories the package's version *provably* escapes, and only those:
+
+```php
+$search->search(new PackageData(name: 'lodash', version: '5.0.0', ecosystem: 'npm'));
+// "< 1.0.0"            → dropped   (every range readable, none matches)
+// ">= 4.0.0, < 5.1.0"  → kept
+// "< 6.0.0-beta.1"     → kept      (can't be ordered — "can't tell" is never "not affected")
+// no ranges at all     → kept
+
+$search->filterByVersion(false)->search($pkg);   // everything, unfiltered
+```
+
+Ranges tagged with a `product` (NVD configurations, EUVD product lists) are
+judged only when they name the package — a sibling product's `< 9.0.0`
+neither flags nor clears it. Config: `vulns.version_filter`.
+
 ### Storing and rehydrating records
 
 `toArray()` / `fromArray()` round-trip a record, so a stored snapshot can be
@@ -303,7 +334,7 @@ $one   = $nvd->fetchById('CVE-2021-44228');         // single advisory
 | `EuvdSource` | ecosystem + name | — | ENISA EUVD. |
 | `SnykSource` | **purl** | `token` + `org_id` | Disabled unless both are configured. |
 | `OssIndexSource` | **purl** | `username` + `api_token` (free account) | Sonatype's dataset; batched 128 purls per request. Disabled without credentials — anonymous access 401s since 2025. Versionless packages are skipped. |
-| `RedHatSource` | name | — | Red Hat Security Data — the source for RPM-ecosystem and container base-image packages. NEVRA strings land in `extra`, not ranges. |
+| `RedHatSource` | name | — | Red Hat Security Data — the source for RPM-ecosystem and container base-image packages. Asked about OS-level packages only (`ecosystems` option: rpm/generic by default — npm's `tar` is not the RPM `tar`). NEVRA strings land in `extra`, not ranges. |
 | `ShodanCvedbSource` | name (product search) | — | One record carries CVSS + EPSS + KEV. |
 | `MitreCveSource` | `fetchById` only | — | Authoritative CVE Record v5 (incl. CNA CVSS v4), often live before NVD analysis. No package search. |
 | `VulnCheckSource` | `fetchById` only | `api_token` | VulnCheck Community "NVD++" — NVD 2.0-shaped records without the NVD lag. Disabled without a token. |
@@ -676,6 +707,16 @@ $search = new VulnSearch([
 composer install && composer test
 ```
 
+## Support
+
+If this package saves you time, consider supporting its development:
+
+<p align="center">
+  <a href="https://www.buymeacoffee.com/gumslone" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
+</p>
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/donate/?hosted_button_id=VCWHQPACTXV5N)
+
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
