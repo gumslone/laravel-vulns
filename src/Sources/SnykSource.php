@@ -150,6 +150,11 @@ class SnykSource extends AbstractSource
         return $results;
     }
 
+    public function knowsId(string $vulnId): bool
+    {
+        return false; // package-scoped API, no by-id lookup
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
         // Snyk's REST API is package-scoped; no public by-ID lookup endpoint.

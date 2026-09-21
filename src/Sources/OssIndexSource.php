@@ -164,6 +164,11 @@ class OssIndexSource extends AbstractSource
         return $results;
     }
 
+    public function knowsId(string $vulnId): bool
+    {
+        return false; // package-scoped API, no by-id lookup
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
         // OSS Index is coordinate-scoped only; no public by-CVE/by-ID lookup.

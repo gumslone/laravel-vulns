@@ -114,8 +114,17 @@ class NvdSource extends AbstractSource
         return $results;
     }
 
+    public function knowsId(string $vulnId): bool
+    {
+        return VulnerabilityData::isCveId(trim($vulnId));
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        if (! $this->knowsId($vulnId)) {
+            return null;
+        }
+
         try {
             $this->throttle();
 
@@ -175,6 +184,9 @@ class NvdSource extends AbstractSource
             cvssV2Vector: $v2Vector,
             cvssV4Score: $v4Score,
             cvssV4Vector: $v4Vector,
+            isKnownExploited: $this->cisaKev($cve)[0],
+            kevSince: $this->cisaKev($cve)[1],
+            kevDueDate: $this->cisaKev($cve)[2],
             isWithdrawn: ($cve['vulnStatus'] ?? '') === 'Rejected',
             // NVD marks contested records via cveTags since ~2023; older
             // records embedded a DISPUTED marker in the description text.

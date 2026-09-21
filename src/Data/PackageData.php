@@ -7,12 +7,13 @@ namespace Gumslone\Vulns\Data;
 use Gumslone\PackageUrl\Purl;
 use Gumslone\Vulns\Support\CpeResolver;
 use Gumslone\Vulns\Support\PurlBuilder;
+use Illuminate\Contracts\Support\Arrayable;
 
 /**
  * Lightweight DTO representing a package discovered during manifest parsing.
  * This is the intermediate form before the record is persisted as OssPackage.
  */
-final class PackageData
+final class PackageData implements \JsonSerializable, Arrayable
 {
     public function __construct(
         public readonly string $name,
@@ -314,6 +315,11 @@ final class PackageData
             dependsOn: $data['depends_on'] ?? [],
             cpe23: $data['cpe23'] ?? null,
         );
+    }
+
+    public function jsonSerialize(): array
+    {
+        return $this->toArray();
     }
 
     public function toArray(): array

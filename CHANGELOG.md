@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.19.0
+
+### Added
+- `VulnSearch::report()` → `SearchReport`: results, errors and coverage of ONE call in an
+  immutable value (`for()`, `isComplete()`, `isConclusive()`, `inconclusiveKeys()`, JSON) —
+  safe where the instance is shared (Octane, queue workers).
+- `searchAny()` recognises the OSV-family and distro advisory ids (PYSEC-, RUSTSEC-, GO-, MAL-,
+  OSV-, SNYK-, RHSA-, DSA-, USN-, ALSA-, SUSE-SU-, …) via
+  `VulnerabilityData::looksLikeAdvisoryId()`; package names like `left-pad` still throw.
+- `VulnerabilityData::affects()`, `recommendedFix()`; both records are `JsonSerializable` and
+  `Arrayable` (`json_encode($vuln)` is `toArray()`).
+- `Version::order()`: fail-safe ordering of pre-release tags, build metadata and Maven release
+  markers; `VersionRange` evaluates OSV event timelines and ignores GIT ranges. OSV ranges are
+  tagged with their package (`product`).
+- Sources declare which ids they can look up (`knowsId()`): a CVE-only feed asked for a GHSA is
+  *skipped* — no request, no bogus error — and `fetchById()` now fills `coverage()`.
+- KEV / withdrawn state that was dropped: NVD & VulnCheck `cisaExploitAdd`/`cisaActionDue`,
+  MITRE's CISA-ADP `kev` metric, EUVD `exploitedSince`, CVE-Search `REJECTED`, VulnCheck `Rejected`.
+
+### Fixed
+- `PurlBuilder`: the name is the last path segment (Go modules round-trip:
+  `pkg:golang/github.com/gin-gonic/gin`), version `"0"` is kept, qualifiers are parsed by hand
+  (no `parse_str` mangling), empty qualifiers dropped, subpaths normalised, types validated,
+  names normalised per type (pypi, github, npm, composer, deb, …); `checksum()` canonicalises
+  instead of lowercasing the whole purl. **Changed:** purls built for those types are lowercase.
+
 ## 1.18.0
 
 ### CVSS

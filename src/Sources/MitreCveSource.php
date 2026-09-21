@@ -55,8 +55,17 @@ class MitreCveSource extends AbstractSource
         return array_fill_keys(array_keys($packages), []);
     }
 
+    public function knowsId(string $vulnId): bool
+    {
+        return VulnerabilityData::isCveId(trim($vulnId));
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        if (! $this->knowsId($vulnId)) {
+            return null;
+        }
+
         // The CVE Services API 400s (not 404s) on lowercase ids.
         $vulnId = strtoupper($vulnId);
 
@@ -113,6 +122,7 @@ class MitreCveSource extends AbstractSource
 
         $bestScore = $v4Score ?? $v3Score ?? $v2Score;
         $ssvc = $this->ssvc($record['containers']['adp'] ?? []);
+        $kevSince = $this->kevSince($record['containers']['adp'] ?? []);
 
         $cwes = [];
         foreach ($cna['problemTypes'] ?? [] as $problemType) {
@@ -140,6 +150,8 @@ class MitreCveSource extends AbstractSource
             cvssV2Vector: $v2Vector,
             cvssV4Score: $v4Score,
             cvssV4Vector: $v4Vector,
+            isKnownExploited: $kevSince !== null,
+            kevSince: $kevSince,
             isWithdrawn: ($meta['state'] ?? '') === 'REJECTED',
             ssvc: $ssvc,
             references: $references,
@@ -217,5 +229,30 @@ class MitreCveSource extends AbstractSource
         }
 
         return [];
+    }
+
+    /**
+     * CISA's ADP container flags KEV-listed CVEs with an `other` metric of
+     * type "kev" ({dateAdded, reference}) — confirmed exploitation, straight
+     * from the CVE record.
+     */
+    private function kevSince(array $adps): ?\DateTimeImmutable
+    {
+        foreach ($adps as $adp) {
+            foreach (is_array($adp['metrics'] ?? null) ? $adp['metrics'] : [] as $metric) {
+                $other = $metric['other'] ?? null;
+                if (! is_array($other) || strtolower((string) ($other['type'] ?? '')) !== 'kev') {
+                    continue;
+                }
+                $added = $other['content']['dateAdded'] ?? null;
+                try {
+                    return new \DateTimeImmutable(is_string($added) && trim($added) !== '' ? $added : 'now');
+                } catch (\Exception) {
+                    return new \DateTimeImmutable;
+                }
+            }
+        }
+
+        return null;
     }
 }

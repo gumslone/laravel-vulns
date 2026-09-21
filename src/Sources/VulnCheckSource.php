@@ -68,8 +68,17 @@ class VulnCheckSource extends AbstractSource
         return array_fill_keys(array_keys($packages), []);
     }
 
+    public function knowsId(string $vulnId): bool
+    {
+        return VulnerabilityData::isCveId(trim($vulnId));
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        if (! $this->knowsId($vulnId)) {
+            return null;
+        }
+
         // CVE-id-indexed APIs are case-sensitive; normalize like the CVE list.
         $vulnId = strtoupper($vulnId);
 
@@ -142,6 +151,10 @@ class VulnCheckSource extends AbstractSource
             cvssV2Vector: $v2Vector,
             cvssV4Score: $v4Score,
             cvssV4Vector: $v4Vector,
+            isKnownExploited: $this->cisaKev($cve)[0],
+            kevSince: $this->cisaKev($cve)[1],
+            kevDueDate: $this->cisaKev($cve)[2],
+            isWithdrawn: strcasecmp((string) ($cve['vulnStatus'] ?? ''), 'Rejected') === 0,
             affectedRanges: $this->configurationRanges($cve['configurations'] ?? []),
             references: $references,
             cwes: array_values(array_unique($cwes)),

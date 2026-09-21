@@ -160,8 +160,17 @@ class RedHatSource extends AbstractSource
         return $results;
     }
 
+    public function knowsId(string $vulnId): bool
+    {
+        return VulnerabilityData::isCveId(trim($vulnId));
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        if (! $this->knowsId($vulnId)) {
+            return null;
+        }
+
         try {
             // Red Hat serves CVE detail pages under the uppercase id only.
             $response = $this->http->get('cve/'.rawurlencode(strtoupper($vulnId)).'.json');

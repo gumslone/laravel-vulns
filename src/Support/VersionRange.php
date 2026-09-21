@@ -141,6 +141,19 @@ final class VersionRange
         $sawUndeterminable = false;
 
         foreach ($ranges as $range) {
+            // OSV-shaped entry: {type, events: [{introduced}, {fixed}, …]}.
+            if (is_array($range) && ! isset($range['range']) && is_array($range['events'] ?? null)) {
+                if (strtoupper((string) ($range['type'] ?? '')) === 'GIT') {
+                    continue; // commits, not versions — says nothing in version space
+                }
+                $result = self::withinEvents($version, $range['events']);
+                if ($result === true) {
+                    return true;
+                }
+                $result === null ? $sawUndeterminable = true : $sawParseable = true;
+
+                continue;
+            }
             $constraint = is_array($range)
                 ? (is_string($range['range'] ?? null) ? $range['range'] : null)
                 : (is_string($range) ? $range : null);
@@ -172,6 +185,53 @@ final class VersionRange
     }
 
     /**
+     * OSV event timeline: affected from each `introduced` until the next
+     * `fixed` / `limit` (exclusive) or `last_affected` (inclusive). Null when
+     * any event's version can't be ordered against ours.
+     *
+     * @param  array<int, array<string, mixed>>  $events
+     */
+    private static function withinEvents(string $version, array $events): ?bool
+    {
+        if (! Version::isOrderable($version)) {
+            return null;
+        }
+
+        $timeline = [];
+        foreach ($events as $event) {
+            foreach (['introduced', 'fixed', 'last_affected', 'limit'] as $kind) {
+                if (! is_array($event) || ! isset($event[$kind]) || ! is_scalar($event[$kind])) {
+                    continue;
+                }
+                $at = (string) $event[$kind] === '0' ? '0' : self::normalise((string) $event[$kind]);
+                if (! Version::isOrderable($at)) {
+                    return null;
+                }
+                $timeline[] = [$at, $kind];
+            }
+        }
+        if ($timeline === []) {
+            return null;
+        }
+
+        // Ascending; at the same version a closing event comes before an opening one.
+        usort($timeline, fn (array $a, array $b) => Version::order($a[0], $b[0])
+            ?: ($a[1] === 'introduced' ? 1 : 0) <=> ($b[1] === 'introduced' ? 1 : 0));
+
+        $affected = false;
+        foreach ($timeline as [$at, $kind]) {
+            $cmp = Version::order($version, $at);
+            $affected = match ($kind) {
+                'introduced' => $cmp >= 0 ? true : $affected,
+                'last_affected' => $cmp > 0 ? false : $affected,
+                default => $cmp >= 0 ? false : $affected, // fixed, limit
+            };
+        }
+
+        return $affected;
+    }
+
+    /**
      * Whether $version satisfies every comma-separated clause of a constraint
      * (clauses are AND-ed, as in npm/GitHub ranges). Null if any clause is
      * unparseable.
@@ -199,9 +259,7 @@ final class VersionRange
             // ("1.1.0a") and other unorderable versions still decide —
             // EUVD's old records enumerate affected releases exactly this way.
             if ($m[1] === '=' || $m[1] === '==') {
-                $equal = self::isComparable($version) && self::isComparable($bound)
-                    ? self::compare($version, $bound) === 0
-                    : strcasecmp($version, $bound) === 0;
+                $equal = (Version::order($version, $bound) ?? (strcasecmp($version, $bound) === 0 ? 0 : 1)) === 0;
                 if (! $equal) {
                     return false; // one clause fails → the AND fails
                 }
@@ -210,16 +268,16 @@ final class VersionRange
             }
 
             // version_compare misorders anything that isn't a clean
-            // dotted-numeric version — Maven "5.3.0.RELEASE" and Debian epochs
-            // "1:1.5" sort BELOW a bare number, which would make ">= 5.3.0"
-            // wrongly fail and clear a genuinely vulnerable package (a false
-            // negative — the dangerous direction). Only order when both sides
-            // are safely comparable; otherwise stay fail-safe.
-            if (! self::isComparable($version) || ! self::isComparable($bound)) {
+            // dotted-numeric version — Debian epochs "1:1.5" or "1.1.1k"
+            // sort BELOW a bare number, which would make ">= 1.1.1" wrongly
+            // fail and clear a genuinely vulnerable package (a false negative
+            // — the dangerous direction). Version::order() only orders what
+            // every ecosystem agrees on; otherwise stay fail-safe.
+            $cmp = Version::order($version, $bound);
+            if ($cmp === null) {
                 return null;
             }
 
-            $cmp = self::compare($version, $bound);
             $ok = match ($m[1]) {
                 '>=' => $cmp >= 0,
                 '>' => $cmp > 0,
@@ -257,8 +315,7 @@ final class VersionRange
         if ($version === null) {
             return false;
         }
-        $installed = Version::comparable($version);
-        if ($installed === null) {
+        if (! Version::isOrderable($version)) {
             return false;
         }
 
@@ -267,9 +324,9 @@ final class VersionRange
             if (trim((string) $entry) === '') {
                 continue;
             }
-            $fix = Version::comparable(self::stripEcosystem((string) $entry));
-            if ($fix === null) {
-                return false; // an unorderable fix (3.0.0-rc1, 1:2.0) may lie above installed
+            $fix = self::stripEcosystem((string) $entry);
+            if (! Version::isOrderable($fix)) {
+                return false; // an unorderable fix (1:2.0, 2.0.post1) may lie above installed
             }
             $fixes[] = $fix;
         }
@@ -278,7 +335,7 @@ final class VersionRange
         }
 
         foreach ($fixes as $fix) {
-            if (self::compare($fix, $installed) > 0) {
+            if (Version::order($fix, $version) > 0) {
                 return false; // a fix lies above installed → not yet past it
             }
         }

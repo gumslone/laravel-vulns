@@ -203,7 +203,8 @@ class VulnSearch
 
     /**
      * One entry point for any identifier a user might paste: an advisory id
-     * (CVE/GHSA/EUVD → the single matching record), a purl, a CPE 2.3, a
+     * (CVE, GHSA, EUVD, or an OSV-family id like PYSEC-/RUSTSEC-/GO-/MAL-/RHSA-
+     * → the single matching record), a purl, a CPE 2.3, a
      * git commit sha, or a forge commit URL. Unrecognisable input throws
      * rather than guessing — a wrong guess would read as "nothing found".
      *
@@ -213,8 +214,8 @@ class VulnSearch
     {
         $query = trim($query);
 
-        if (preg_match('/^(CVE-\d{4}-\d+|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}|EUVD-\d{4}-\d+)$/i', $query)) {
-            $found = $this->fetchById(strtoupper($query));
+        if (VulnerabilityData::looksLikeAdvisoryId($query)) {
+            $found = $this->fetchById(VulnerabilityData::normaliseId($query));
 
             return $found !== null ? [$found] : [];
         }
@@ -232,7 +233,7 @@ class VulnSearch
         }
 
         throw new \InvalidArgumentException(
-            "Unrecognised query '{$query}'. Pass a CVE/GHSA/EUVD id, a purl (pkg:…), a CPE 2.3, a commit sha, or a package URL.",
+            "Unrecognised query '{$query}'. Pass an advisory id (CVE, GHSA, EUVD, PYSEC, RUSTSEC, GO, MAL, RHSA, …), a purl (pkg:…), a CPE 2.3, a commit sha, or a package URL.",
         );
     }
 
@@ -337,6 +338,21 @@ class VulnSearch
     }
 
     /**
+     * searchBatch() with its outcome attached: results, source failures and
+     * per-package coverage in one immutable SearchReport that belongs to this
+     * call — prefer it over errors()/coverage() wherever the instance is
+     * shared (the container singleton under Octane or in a queue worker).
+     *
+     * @param  PackageData[]  $packages
+     */
+    public function report(array $packages): SearchReport
+    {
+        $results = $this->searchBatch($packages);
+
+        return new SearchReport($results, $this->errors, $this->coverage);
+    }
+
+    /**
      * Stamp merged results with EPSS / KEV signals. Runs after the merge so
      * canonical CVE ids are settled; a failing feed leaves results
      * un-enriched and lands in errors() rather than aborting the search.
@@ -369,7 +385,7 @@ class VulnSearch
         // errors() reports the most recent operation only — without the reset
         // a stale failure from an earlier search would taint this lookup.
         $this->errors = [];
-        $this->coverage = [];
+        $this->coverage = [$vulnId => ['queried' => [], 'skipped' => [], 'failed' => []]];
         $found = [];
 
         foreach ($this->sources as $source) {
@@ -377,12 +393,22 @@ class VulnSearch
                 continue;
             }
 
+            // A CVE-only feed can't look a GHSA up (and would 400 on it):
+            // that is "not covered", never an outage.
+            if ($source instanceof AbstractSource && ! $source->knowsId($vulnId)) {
+                $this->coverage[$vulnId]['skipped'][] = $source->name();
+
+                continue;
+            }
+
             try {
                 if ($data = $source->fetchById($vulnId)) {
                     $found[] = $data;
                 }
+                $this->coverage[$vulnId]['queried'][] = $source->name();
             } catch (\Throwable $e) {
                 $this->errors[$source->name()] = $e->getMessage();
+                $this->coverage[$vulnId]['failed'][] = $source->name();
             }
         }
 

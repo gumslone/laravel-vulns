@@ -109,6 +109,15 @@ abstract class AbstractSource implements Source
         return true;
     }
 
+    /**
+     * Whether fetchById() can look this id up at all. A CVE-only feed asked
+     * for a GHSA would answer 400 — which is "not covered", not an outage.
+     */
+    public function knowsId(string $vulnId): bool
+    {
+        return true;
+    }
+
     /** Read a key from this source's config array. */
     protected function config(string $key, mixed $default = null): mixed
     {

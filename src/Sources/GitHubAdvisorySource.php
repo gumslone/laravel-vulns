@@ -242,6 +242,11 @@ class GitHubAdvisorySource extends AbstractSource
         return $results;
     }
 
+    public function knowsId(string $vulnId): bool
+    {
+        return str_starts_with(strtoupper(trim($vulnId)), 'GHSA-') && (bool) $this->config('token');
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
         // The GraphQL feed needs a token; without one this source can't look

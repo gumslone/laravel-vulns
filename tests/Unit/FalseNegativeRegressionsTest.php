@@ -59,21 +59,54 @@ it('compares versions of different segment counts as equal when zero-padded', fu
 });
 
 it('never answers "not affected" while any range is unreadable', function () {
-    // The unparseable range may be the one that covers this version.
-    expect(VersionRange::isVulnerable('5.3.2', ['>= 5.3.0.RELEASE, < 5.3.5', '< 4.0']))->toBeNull()
-        ->and(VersionRange::isVulnerable('1.5', ['>= 1.0-rc1, < 2.0', '< 0.5']))->toBeNull()
+    // The unreadable range may be the one that covers this version.
+    expect(VersionRange::isVulnerable('5.3.2', ['>= 5.3.0.post1, < 5.3.5', '< 4.0']))->toBeNull()
+        ->and(VersionRange::isVulnerable('1.5', ['>= 1:1.0, < 2.0', '< 0.5']))->toBeNull()
         ->and(VersionRange::isVulnerable('3.0.5', ['< 2.0 || >= 3.0 < 3.1', '= 1.0']))->toBeNull()
-        // OSV event lists carry no constraint string at all
-        ->and(VersionRange::isVulnerable('3.0.5', [['type' => 'SEMVER', 'events' => [['introduced' => '0']]], '< 1.0']))->toBeNull()
+        // an OSV event list it can't order
+        ->and(VersionRange::isVulnerable('3.0.5', [['type' => 'ECOSYSTEM', 'events' => [['introduced' => '1:2.0']]], '< 1.0']))->toBeNull()
         // …but a match still decides, and all-readable ranges still clear
-        ->and(VersionRange::isVulnerable('0.4', ['>= 1.0-rc1, < 2.0', '< 0.5']))->toBeTrue()
+        ->and(VersionRange::isVulnerable('0.4', ['>= 1:1.0, < 2.0', '< 0.5']))->toBeTrue()
         ->and(VersionRange::isVulnerable('5.0.0', ['< 1.0', '>= 2.0, < 3.0']))->toBeFalse()
         // "*" is every version
         ->and(VersionRange::isVulnerable('5.0.0', ['*', '= 1.0']))->toBeTrue();
 });
 
+it('orders what every ecosystem agrees on — pre-release tags, Maven release markers, build metadata — and nothing else', function () {
+    expect(VersionRange::isVulnerable('1.0.0-rc.1', ['< 1.0.0']))->toBeTrue()               // a pre-release is below its release
+        ->and(VersionRange::isVulnerable('1.0.0', ['< 1.0.0-rc.1']))->toBeFalse()
+        ->and(VersionRange::isVulnerable('2.0-beta9', ['< 2.0-beta10']))->toBeTrue()          // numeric, not lexical
+        ->and(VersionRange::isVulnerable('2.0-alpha1', ['>= 2.0-beta1']))->toBeFalse()
+        ->and(VersionRange::isVulnerable('5.3.2', ['>= 5.3.0.RELEASE, < 5.3.5']))->toBeTrue() // RELEASE/Final/GA = the release
+        ->and(VersionRange::isVulnerable('5.3.18.RELEASE', ['< 5.3.18']))->toBeFalse()
+        ->and(VersionRange::isVulnerable('1.0.0+build5', ['= 1.0.0']))->toBeTrue()            // build metadata is ignored
+        // never guessed: revisions, PEP 440, letter releases, epochs, unknown qualifiers
+        ->and(VersionRange::isVulnerable('1.0-1', ['< 1.0']))->toBeNull()
+        ->and(VersionRange::isVulnerable('1.0rc1', ['< 1.0']))->toBeNull()
+        ->and(VersionRange::isVulnerable('1.1.1k', ['>= 1.1.1, < 1.1.1l']))->toBeNull()
+        ->and(VersionRange::isVulnerable('1.0.0-p1', ['< 1.0.0']))->toBeNull()
+        ->and(VersionRange::isVulnerable('0.0.0-20210101000000-abcdef123456', ['< 1.0.0']))->toBeNull();
+});
+
+it('evaluates OSV event timelines, and ignores GIT ranges in version space', function () {
+    $semver = fn (array $events) => [['type' => 'SEMVER', 'events' => $events]];
+
+    expect(VersionRange::isVulnerable('4.17.20', $semver([['introduced' => '0'], ['fixed' => '4.17.21']])))->toBeTrue()
+        ->and(VersionRange::isVulnerable('4.17.21', $semver([['introduced' => '0'], ['fixed' => '4.17.21']])))->toBeFalse()
+        ->and(VersionRange::isVulnerable('2.5.0', $semver([['introduced' => '2.0.0'], ['last_affected' => '2.5.0']])))->toBeTrue()
+        ->and(VersionRange::isVulnerable('2.5.1', $semver([['introduced' => '2.0.0'], ['last_affected' => '2.5.0']])))->toBeFalse()
+        // two affected windows in one range
+        ->and(VersionRange::isVulnerable('3.1.0', $semver([['introduced' => '1.0.0'], ['fixed' => '1.5.0'], ['introduced' => '3.0.0'], ['fixed' => '3.2.0']])))->toBeTrue()
+        ->and(VersionRange::isVulnerable('2.0.0', $semver([['introduced' => '1.0.0'], ['fixed' => '1.5.0'], ['introduced' => '3.0.0'], ['fixed' => '3.2.0']])))->toBeFalse()
+        ->and(VersionRange::isVulnerable('9.9.9', $semver([['introduced' => '0']])))->toBeTrue()
+        // commits say nothing about versions; alone they decide nothing
+        ->and(VersionRange::isVulnerable('1.0.0', [['type' => 'GIT', 'events' => [['introduced' => 'abc123']]]]))->toBeNull()
+        ->and(VersionRange::isVulnerable('5.0.0', [['type' => 'GIT', 'events' => [['introduced' => 'abc123']]], ...$semver([['introduced' => '0'], ['fixed' => '1.0.0']])]))->toBeFalse();
+});
+
 it('treats an unorderable fix as possibly above the installed version, and epochs as part of the version', function () {
     expect(VersionRange::isPastAllFixes('2.0.5', ['1.2.5', '2.0.3', '3.0.0-rc1']))->toBeFalse()
+        ->and(VersionRange::isPastAllFixes('2.0.5', ['1.2.5', '2.0.3.post1']))->toBeFalse()
         ->and(VersionRange::isPastAllFixes('1.0.0', ['1:0.9']))->toBeFalse()
         ->and(VersionRange::isPastAllFixes('1.9.0', ['Packagist:1.8.0']))->toBeTrue()
         ->and(VersionRange::recommendedFix('1.2.0', ['Packagist:1.2.5']))->toBe('1.2.5');
@@ -150,6 +183,7 @@ it('NVD keeps CVEs whose range it cannot order, judges by the queried product, a
 // ------------------------------------------------- fetchById: down ≠ unknown
 
 it('throws from fetchById when the feed is down, and answers null only for a real "no such record"', function (string $name) {
+    $id = $name === 'euvd' ? 'EUVD-2030-1' : 'CVE-2030-1'; // EUVD's by-id endpoint knows its own ids only
     $make = fn (array $r) => match ($name) {
         'osv' => new OsvSource(fnClient($r)),
         'nvd' => new NvdSource(new CpeResolver, null, fnClient($r), ['rate_limit_max' => 1000]),
@@ -157,10 +191,10 @@ it('throws from fetchById when the feed is down, and answers null only for a rea
         'cve_search' => new CveSearchSource(new CpeResolver, null, fnClient($r)),
     };
 
-    expect(fn () => $make([new Response(500, [], 'down')])->fetchById('CVE-2030-1'))->toThrow(RuntimeException::class)
-        ->and($make([new Response(404, [], '{}')])->fetchById('CVE-2030-1'))->toBeNull()
+    expect(fn () => $make([new Response(500, [], 'down')])->fetchById($id))->toThrow(RuntimeException::class)
+        ->and($make([new Response(404, [], '{}')])->fetchById($id))->toBeNull()
         // a 200 that is not JSON (proxy error page) is a failure too
-        ->and(fn () => $make([new Response(200, [], '<html>Bad gateway</html>')])->fetchById('CVE-2030-1'))->toThrow(RuntimeException::class);
+        ->and(fn () => $make([new Response(200, [], '<html>Bad gateway</html>')])->fetchById($id))->toThrow(RuntimeException::class);
 })->with(['osv', 'nvd', 'euvd', 'cve_search']);
 
 it('GitHub fetchById throws on an outage or GraphQL error, and is simply not covered without a token', function () {
@@ -321,10 +355,10 @@ it('normalises advisory ids so casing, whitespace and repeats cannot split a rec
         ->and(VulnerabilityData::fromArray($vuln->toArray())->toArray())->toBe($vuln->toArray());
 });
 
-it('resets coverage() on fetchById so a previous batch cannot leak into it', function () {
+it('reports fetchById coverage for the id, never a previous batch\'s', function () {
     $search = new VulnSearch([new FakeSource('osv')]);
     $search->searchBatch(['a' => new PackageData(name: 'x', version: '1', ecosystem: 'npm')]);
     $search->fetchById('CVE-2030-1');
 
-    expect($search->coverage())->toBe([]);
+    expect($search->coverage())->toBe(['CVE-2030-1' => ['queried' => ['osv'], 'skipped' => [], 'failed' => []]]);
 });

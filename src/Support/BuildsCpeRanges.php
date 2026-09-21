@@ -93,4 +93,24 @@ trait BuildsCpeRanges
 
         return [null, null];
     }
+
+    /**
+     * CISA KEV fields NVD-shaped records carry inline (`cisaExploitAdd`,
+     * `cisaActionDue`) — confirmed exploitation, even with enrichment off.
+     *
+     * @return array{0: bool, 1: \DateTimeImmutable|null, 2: \DateTimeImmutable|null} [isKnownExploited, kevSince, kevDueDate]
+     */
+    protected function cisaKev(array $cve): array
+    {
+        $date = function (mixed $value): ?\DateTimeImmutable {
+            try {
+                return is_string($value) && trim($value) !== '' ? new \DateTimeImmutable($value) : null;
+            } catch (\Exception) {
+                return null;
+            }
+        };
+        $since = $date($cve['cisaExploitAdd'] ?? null);
+
+        return [$since !== null, $since, $date($cve['cisaActionDue'] ?? null)];
+    }
 }

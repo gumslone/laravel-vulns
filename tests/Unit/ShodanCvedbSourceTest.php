@@ -76,15 +76,18 @@ it('pools one product search per distinct package name and maps threat signals',
         ->and($results['b'][0]->vulnId)->toBe('CVE-2024-3094');
 });
 
-it('fetches a single record by id, percent-encoding the id in the path', function () {
+it('fetches a single record by CVE id, and never sends anything else to the path', function () {
     $history = [];
     $source = makeShodanCvedbSource([
         new Response(200, [], json_encode(shodanCvedbRecord())),
     ], $history);
 
-    $vuln = $source->fetchById('CVE-2024/3094');
+    // Not a CVE id: not something this feed can look up — no request at all.
+    expect($source->fetchById('CVE-2024/3094'))->toBeNull()->and($history)->toBe([]);
 
-    expect($history[0]['request']->getUri()->getPath())->toBe('cve/CVE-2024%2F3094')
+    $vuln = $source->fetchById('CVE-2024-3094');
+
+    expect($history[0]['request']->getUri()->getPath())->toBe('cve/CVE-2024-3094')
         ->and($vuln->summary)->toContain('xz')
         ->and($vuln->isKnownExploited)->toBeTrue()
         ->and($vuln->sourcePublishedAt->format('Y-m-d'))->toBe('2024-03-29')

@@ -290,6 +290,8 @@ class CveSearchSource extends AbstractSource
             cvssV2Vector: $item['cvss-vector'] ?? null,
             cvssV4Score: $cvssV4Score,
             cvssV4Vector: $cvssV4Vector,
+            // CVE 5 records keep REJECTED ids resolvable; they must not look live.
+            isWithdrawn: strcasecmp((string) ($item['cveMetadata']['state'] ?? ''), 'REJECTED') === 0,
             references: array_map(fn ($url) => ['type' => null, 'url' => is_array($url) ? ($url['url'] ?? '') : $url], $references),
             cwes: array_values(array_unique($cwes)),
             sourcePublishedAt: $published ? new \DateTime($published) : null,

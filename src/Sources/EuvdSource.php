@@ -161,8 +161,18 @@ class EuvdSource extends AbstractSource
         return $results;
     }
 
+    /** The by-id endpoint is keyed on EUVD's own ids. */
+    public function knowsId(string $vulnId): bool
+    {
+        return (bool) preg_match('/^EUVD-\d{4}-\d+$/i', trim($vulnId));
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        if (! $this->knowsId($vulnId)) {
+            return null;
+        }
+
         try {
             $response = $this->http->get('enisaid', ['query' => ['id' => $vulnId]]);
             $body = trim((string) $response->getBody());
@@ -200,6 +210,15 @@ class EuvdSource extends AbstractSource
 
         [$ranges, $fixedVersions] = $this->productRanges($item);
 
+        $exploitedSince = null;
+        if (is_string($item['exploitedSince'] ?? null) && trim($item['exploitedSince']) !== '') {
+            try {
+                $exploitedSince = new \DateTimeImmutable($item['exploitedSince']);
+            } catch (\Exception) {
+                $exploitedSince = null;
+            }
+        }
+
         return new VulnerabilityData(
             vulnId: $vulnId,
             source: 'euvd',
@@ -208,6 +227,9 @@ class EuvdSource extends AbstractSource
             severity: $score !== null ? SeverityLevel::fromCvssScore($score) : SeverityLevel::Unknown,
             cvssV3Score: $score,
             cvssV3Vector: $item['baseScoreVector'] ?? null,
+            // `exploitedSince` is EUVD's relay of the CISA KEV listing date.
+            isKnownExploited: $exploitedSince !== null,
+            kevSince: $exploitedSince,
             aliases: array_values(array_diff(array_merge($aliases, [$euvdId]), [$vulnId])),
             affectedRanges: $ranges,
             isFixed: $fixedVersions !== [],

@@ -161,8 +161,17 @@ class ShodanCvedbSource extends AbstractSource
         return $results;
     }
 
+    public function knowsId(string $vulnId): bool
+    {
+        return VulnerabilityData::isCveId(trim($vulnId));
+    }
+
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        if (! $this->knowsId($vulnId)) {
+            return null;
+        }
+
         try {
             $response = $this->http->get('cve/'.rawurlencode($vulnId));
         } catch (BadResponseException $e) {

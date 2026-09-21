@@ -69,8 +69,9 @@ $vulns = $search->searchCpe('cpe:2.3:a:prasathmani:tiny_file_manager:2.6:*:*:*:*
 $vulns = $search->searchCommit('https://github.com/owner/repo/commit/bf04e5f2'); // or a bare sha
 $vulns = $search->search(new PackageData(name: 'lodash', version: '4.17.20', ecosystem: 'npm'));
 
-// One entry point for anything a user pastes — advisory id, purl, CPE,
-// commit sha, or any package URL. Unrecognisable input throws.
+// One entry point for anything a user pastes — advisory id (CVE, GHSA, EUVD,
+// PYSEC-, RUSTSEC-, GO-, MAL-, RHSA-, DSA-, USN-, …), purl, CPE, commit sha,
+// or any package URL. Unrecognisable input throws.
 $vulns = $search->searchAny('CVE-2021-44228');
 $vulns = $search->searchAny('cpe:2.3:a:tukaani:xz:5.6.0:*:*:*:*:*:*:*');
 $vulns = $search->searchAny('https://github.com/vrana/adminer/releases/download/v5.5.1/adminer.zip');
@@ -250,6 +251,24 @@ one advisory's details, or stopped at its `max_pages` cap. Its results are
 kept, the reason lands in `errors()`, and the package does not count as
 covered. (Calling a source directly? The same information is on
 `$source->warnings()` and `$source->incompleteKeys()`.)
+
+### One report per call
+
+`errors()` and `coverage()` describe *the most recent call* on the instance —
+fine in a script, fragile on a shared singleton (Octane, queue workers, nested
+searches). `report()` returns results, failures and coverage together, as an
+immutable value that belongs to its call:
+
+```php
+$report = $search->report(['lodash' => $lodash, 'left-pad' => $leftPad]);
+
+$report->for('lodash');            // VulnerabilityData[]
+$report->errors;                   // ['nvd' => '503 Service Unavailable']
+$report->isComplete();             // false — a source failed or was cut short
+$report->isConclusive('left-pad'); // may an EMPTY answer be shown as clean?
+$report->inconclusiveKeys();       // packages to flag as "not covered / under-reported"
+json_encode($report);              // {results, errors, coverage}
+```
 
 ### Version filtering
 
@@ -670,23 +689,25 @@ $vuln->withCvssModifiersOf($myEnvironmentVector);   // the advisory's base + ONL
 
 ### Does it actually affect my version?
 
-Not every source version-filters: some return advisories for a package *name*.
-`VersionRange` answers the real question, and deliberately distinguishes
-"proven safe" from "can't tell":
-
 ```php
-use Gumslone\Vulns\Support\VersionRange;
-
-VersionRange::isVulnerable('4.17.20', $v->affectedRanges);  // true  — inside a range
-VersionRange::isVulnerable('4.17.21', $v->affectedRanges);  // false — provably outside
-VersionRange::isVulnerable('4.17.20', []);                  // null  — no evidence either way
-
-// At or past every published fix, even without ranges:
-VersionRange::isPastAllFixes('5.0.0', $v->fixedVersions);   // true
+$vuln->affects('4.17.20', 'lodash');   // true  — inside an affected range
+$vuln->affects('4.17.21', 'lodash');   // false — PROVABLY outside every range about lodash
+$vuln->affects('1.1.1k', 'openssl');   // null  — can't tell: treat as possibly affected
+$vuln->recommendedFix('4.17.20');      // '4.17.21' — lowest fix at/above, same major line first
 ```
 
-`null` means undeterminable — decide your own fail-safe (a scanner should
-usually keep the finding and flag it for review rather than silently drop it).
+`false` is only ever a proof: every range that speaks about the package was
+readable and none matched. Anything else is `null` — no version, no ranges, or
+a range/version that can't be ordered *safely*. Ordered: dotted numbers
+(`1.0` = `1.0.0`), pre-release tags every ecosystem agrees on (`1.0.0-rc.1` <
+`1.0.0`, `2.0-beta9` < `2.0-beta10`), build metadata (ignored), Maven release
+markers (`5.3.0.RELEASE` = `5.3.0`), and OSV `introduced` / `fixed` /
+`last_affected` event timelines. Never guessed: Debian/RPM epochs and
+revisions (`1:2.0`, `1.0-1`), PEP 440 suffixes (`1.0rc1`, `1.0.post1`), letter
+releases (`1.1.1k`), Go pseudo-versions, unknown qualifiers.
+
+`VersionRange::isVulnerable()`, `relevantTo()` and `Version::order()` are the
+same logic for ranges and versions you hold elsewhere.
 
 ## Related
 

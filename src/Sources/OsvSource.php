@@ -325,7 +325,15 @@ class OsvSource extends AbstractSource
                 $ecosystems[] = $eco;
             }
 
+            // Tagged with the package it belongs to: one advisory often covers
+            // several packages, and another package's timeline says nothing
+            // about ours (VersionRange::relevantTo()).
+            $name = trim((string) ($affected['package']['name'] ?? ''));
             foreach ($affected['ranges'] ?? [] as $range) {
+                if (! is_array($range)) {
+                    continue;
+                }
+                $range = $name !== '' ? $range + ['product' => $name] : $range;
                 $ranges[] = $range;
                 foreach ($range['events'] ?? [] as $event) {
                     if (isset($event['fixed'])) {
