@@ -31,6 +31,13 @@ jobs:
           extensions: curl, json, mbstring
           coverage: none
 
+      # Laravel 11 is past its security-support window, and Composer refuses
+      # to install releases with open advisories. The package still supports
+      # apps on it, so THIS TEST INSTALL (never a consumer's) lifts the block.
+      - name: Allow the end-of-life framework in the test install
+        if: matrix.laravel == '11'
+        run: composer config policy.advisories.block false
+
       - name: Install dependencies
         run: |
           flags="--prefer-dist --no-interaction --no-progress"
