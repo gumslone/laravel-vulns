@@ -45,6 +45,19 @@ return [
     */
     'version_filter' => env('VULNS_VERSION_FILTER', true),
 
+    /*
+    | Complete the ids of CVE-only records: a CVE from NVD / CVE-Search comes
+    | without its GHSA (PYSEC, GO-, …) aliases, and when OSV / GitHub had no
+    | package-level answer those ids never arrive. On, every such CVE is looked
+    | up once by id (cached) on the listed sources after the merge — one extra
+    | request per NEW CVE per source, at most `max` per search. Off by default.
+    */
+    'complete_aliases' => [
+        'enabled' => env('VULNS_COMPLETE_ALIASES', false),
+        'sources' => ['osv', 'github'],
+        'max' => (int) env('VULNS_COMPLETE_ALIASES_MAX', 50),
+    ],
+
     // Dispatch Events\SourceFailed / Events\SearchCompleted through Laravel's
     // event dispatcher (listen for them like any other event).
     'events' => env('VULNS_EVENTS', true),

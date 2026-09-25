@@ -53,6 +53,8 @@ class VulnSearch
         private readonly ?ThreatEnricher $enricher = null,
         private readonly bool $filterByVersion = true,
         private readonly ?\Closure $listener = null,
+        /** @var array{sources: string[], max: int}|null null = off */
+        private readonly ?array $completeAliases = null,
     ) {
         $this->priority = array_values(array_map('strtolower', $priority ?? self::DEFAULT_PRIORITY));
     }
@@ -84,7 +86,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => in_array($s->name(), $wanted, true),
-        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener);
+        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
     }
 
     /**
@@ -100,7 +102,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => ! in_array($s->name(), $unwanted, true),
-        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener);
+        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
     }
 
     /**
@@ -113,7 +115,7 @@ class VulnSearch
      */
     public function prioritize(string|array $names): self
     {
-        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener);
+        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
     }
 
     /**
@@ -124,7 +126,7 @@ class VulnSearch
      */
     public function preferLatest(bool $prefer = true): self
     {
-        return new self($this->sources, $this->priority, $prefer, $this->enricher, $this->filterByVersion, $this->listener);
+        return new self($this->sources, $this->priority, $prefer, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
     }
 
     /**
@@ -133,7 +135,7 @@ class VulnSearch
      */
     public function withEnricher(?ThreatEnricher $enricher): self
     {
-        return new self($this->sources, $this->priority, $this->preferLatest, $enricher, $this->filterByVersion, $this->listener);
+        return new self($this->sources, $this->priority, $this->preferLatest, $enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
     }
 
     /**
@@ -145,7 +147,7 @@ class VulnSearch
      */
     public function filterByVersion(bool $filter = true): self
     {
-        return new self($this->sources, $this->priority, $this->preferLatest, $this->enricher, $filter, $this->listener);
+        return new self($this->sources, $this->priority, $this->preferLatest, $this->enricher, $filter, $this->listener, $this->completeAliases);
     }
 
     /**
@@ -161,8 +163,96 @@ class VulnSearch
     {
         return new self(
             $this->sources, $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion,
-            $listener === null ? null : $listener(...),
+            $listener === null ? null : $listener(...), $this->completeAliases,
         );
+    }
+
+    /**
+     * A copy that completes the ids of CVE-only records: a CVE reported by
+     * NVD or CVE-Search comes without its GHSA / PYSEC / GO- aliases, and
+     * when no alias-carrying feed (OSV, GitHub) answered the package search
+     * — a pkg:github/… purl OSV can't map — those ids never arrive. After
+     * the merge, every CVE record with no aliases is looked up ONCE by id
+     * on the named sources and the answers merged in (aliases, and any gaps
+     * they fill). Lookups are cached per id, so the cost is one request per
+     * NEW CVE per source; $max bounds a single search.
+     *
+     * Off by default (an extra outbound request per new CVE); `false` turns
+     * it off on a copy that had it.
+     *
+     * @param  string[]|bool  $sources  source names to ask, in order — true = ['osv', 'github']
+     */
+    public function completeAliases(array|bool $sources = true, int $max = 50): self
+    {
+        $setting = match (true) {
+            $sources === false => null,
+            $sources === true => ['sources' => ['osv', 'github'], 'max' => $max],
+            default => ['sources' => array_values(array_map('strtolower', $sources)), 'max' => $max],
+        };
+
+        return new self(
+            $this->sources, $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion,
+            $this->listener, $setting,
+        );
+    }
+
+    /**
+     * @param  array<array-key, VulnerabilityData[]>  $results
+     * @return array<array-key, VulnerabilityData[]>
+     */
+    private function completeIds(array $results): array
+    {
+        if ($this->completeAliases === null) {
+            return $results;
+        }
+
+        $wanted = [];
+        foreach ($results as $vulns) {
+            foreach ($vulns as $vuln) {
+                if ($vuln->aliases === [] && VulnerabilityData::isCveId($vuln->vulnId)) {
+                    $wanted[$vuln->vulnId] = true;
+                }
+            }
+        }
+        $ids = array_slice(array_keys($wanted), 0, max(0, $this->completeAliases['max']));
+        if ($ids === []) {
+            return $results;
+        }
+        if (count($wanted) > count($ids)) {
+            $this->errors['aliases'] = sprintf('%d of %d CVEs left without alias lookup (max %d per search)', count($wanted) - count($ids), count($wanted), count($ids));
+        }
+
+        $sources = array_filter($this->all(), fn (Source $s) => $s->isEnabled() && in_array($s->name(), $this->completeAliases['sources'], true));
+        $found = [];
+        foreach ($sources as $source) {
+            foreach ($ids as $id) {
+                if ($source instanceof AbstractSource && ! $source->knowsId($id)) {
+                    continue;
+                }
+                try {
+                    if ($extra = $source->fetchById($id)) {
+                        $found[$id][] = $extra;
+                    }
+                } catch (\Throwable $e) {
+                    $this->errors[$source->name()] = ($this->errors[$source->name()] ?? '') === ''
+                        ? "alias lookup: {$e->getMessage()}"
+                        : $this->errors[$source->name()];
+                    break; // a failing feed is not asked again this search
+                }
+            }
+        }
+        if ($found === []) {
+            return $results;
+        }
+
+        // The original record stays the base — completion fills, never rewrites.
+        return array_map(fn (array $vulns) => array_map(function (VulnerabilityData $vuln) use ($found): VulnerabilityData {
+            foreach ($found[$vuln->vulnId] ?? [] as $extra) {
+                $vuln = $this->mergeOrdered($vuln, $extra);
+            }
+
+            return $vuln;
+        }, $vulns), $results);
     }
 
     private function emit(object $event): void
@@ -344,7 +434,7 @@ class VulnSearch
             }
         }
 
-        $results = $this->enrich(array_map($this->merge(...), $results));
+        $results = $this->enrich($this->completeIds(array_map($this->merge(...), $results)));
         if ($this->listener !== null) {
             $this->emit(new Events\SearchCompleted(new SearchReport($results, $this->errors, $this->coverage)));
         }
@@ -558,6 +648,12 @@ class VulnSearch
     {
         [$base, $other] = $this->pickBase($a, $b);
 
+        return $this->mergeOrdered($base, $other);
+    }
+
+    /** Merge with the base already chosen: its opinion wins, $other only fills gaps. */
+    private function mergeOrdered(VulnerabilityData $base, VulnerabilityData $other): VulnerabilityData
+    {
         // The displayed id stays the CVE regardless of which record wins the
         // merge — canonical ids are how consumers correlate across scans.
         $vulnId = VulnerabilityData::isCveId($base->vulnId) || ! VulnerabilityData::isCveId($other->vulnId)
@@ -565,7 +661,7 @@ class VulnSearch
             : $other->vulnId;
 
         $aliases = array_values(array_unique(array_filter(array_merge(
-            $base->aliases, $other->aliases, [$a->vulnId, $b->vulnId],
+            $base->aliases, $other->aliases, [$base->vulnId, $other->vulnId],
         ), fn (string $id) => $id !== $vulnId)));
 
         // Scores merge as before — the base's opinion wins, gaps fill from

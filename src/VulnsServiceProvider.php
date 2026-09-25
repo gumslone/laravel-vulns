@@ -108,6 +108,9 @@ class VulnsServiceProvider extends ServiceProvider
             // Events\SourceFailed / Events\SearchCompleted through the app's
             // dispatcher — Event::listen(SourceFailed::class, …) just works.
             config('vulns.events', true) ? fn (object $event) => $app['events']->dispatch($event) : null,
+            config('vulns.complete_aliases.enabled', false)
+                ? ['sources' => (array) config('vulns.complete_aliases.sources', ['osv', 'github']), 'max' => (int) config('vulns.complete_aliases.max', 50)]
+                : null,
         ));
     }
 

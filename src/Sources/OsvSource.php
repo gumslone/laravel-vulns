@@ -254,12 +254,23 @@ class OsvSource extends AbstractSource
 
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
+        $vulnId = VulnerabilityData::normaliseId($vulnId);
+        // Cached like product lookups (a "no such id" too): alias completion
+        // asks for the same CVEs on every scan, and OSV allows 60/min.
+        if (($cached = $this->cachedLookup('osv|id|'.$vulnId)) !== null) {
+            return $cached === [] ? null : $this->parseVuln($cached);
+        }
+
         try {
             $response = $this->http->get('v1/vulns/'.rawurlencode($vulnId));
+            $record = $this->decode($response, "OSV lookup of {$vulnId}");
+            $this->cacheLookup('osv|id|'.$vulnId, $record);
 
-            return $this->parseVuln($this->decode($response, "OSV lookup of {$vulnId}"));
+            return $this->parseVuln($record);
         } catch (GuzzleException $e) {
             if (self::isNotFound($e)) {
+                $this->cacheLookup('osv|id|'.$vulnId, []);
+
                 return null;
             }
 

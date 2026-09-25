@@ -290,6 +290,29 @@ Ranges tagged with a `product` (NVD configurations, EUVD product lists) are
 judged only when they name the package — a sibling product's `< 9.0.0`
 neither flags nor clears it. Config: `vulns.version_filter`.
 
+### Completing ids: the GHSA for a CVE
+
+NVD and CVE-Search report a CVE with no aliases, and when OSV / GitHub had no
+package-level answer (a `pkg:github/…` purl OSV can't map) the GHSA, `GO-` or
+`PYSEC-` ids never arrive. `completeAliases()` looks every CVE-only record up
+once by id — on OSV, and on GitHub through the advisory's CVE identifier —
+and merges the answer in (aliases, plus any gap it fills; the original record
+keeps its opinion):
+
+```php
+$search->completeAliases()->search($package);            // OSV + GitHub, at most 50 lookups per search
+$search->completeAliases(['osv'], max: 20)->search($package);
+// or globally: VULNS_COMPLETE_ALIASES=true
+
+$vuln->aliases;   // ['GHSA-p77j-4mvh-x3m3', 'GO-2026-4762']
+$vuln->altId();   // 'GHSA-p77j-4mvh-x3m3' — the GHSA when known, else the first other alias
+$vuln->ghsaId();
+```
+
+Off by default: it is one extra request per *new* CVE per source (lookups are
+cached by id, "no such id" included; OSV allows 60 requests a minute). A
+failing feed lands in `errors()` — the result is never dropped for it.
+
 ### Storing and rehydrating records
 
 `toArray()` / `fromArray()` round-trip a record, so a stored snapshot can be

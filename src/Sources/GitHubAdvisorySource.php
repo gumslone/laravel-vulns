@@ -247,39 +247,55 @@ class GitHubAdvisorySource extends AbstractSource
 
     public function knowsId(string $vulnId): bool
     {
-        return str_starts_with(strtoupper(trim($vulnId)), 'GHSA-') && (bool) $this->config('token');
+        $id = strtoupper(trim($vulnId));
+
+        return (str_starts_with($id, 'GHSA-') || VulnerabilityData::isCveId($id)) && (bool) $this->config('token');
     }
 
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
         // The GraphQL feed needs a token; without one this source can't look
         // an advisory up at all, which is "not covered", not a failure.
-        if (! str_starts_with($vulnId, 'GHSA-') || ! $this->config('token')) {
+        if (! $this->knowsId($vulnId)) {
             return null;
         }
+        $vulnId = VulnerabilityData::normaliseId($vulnId);
+
+        if (($cached = $this->cachedLookup('github|id|'.$vulnId)) !== null) {
+            return $cached === [] ? null : $this->parseAdvisory($cached, [], null);
+        }
+
+        $fields = <<<'GRAPHQL'
+            ghsaId
+            summary
+            description
+            severity
+            publishedAt
+            updatedAt
+            permalink
+            identifiers { type value }
+            references { url }
+            cwes(first: 10) { nodes { cweId } }
+            withdrawnAt
+            cvssSeverities { cvssV3 { score vectorString } cvssV4 { score vectorString } }
+            GRAPHQL;
 
         try {
-            $data = $this->graphql(
-                <<<'GRAPHQL'
-                query($ghsaId: String!) {
-                  securityAdvisory(ghsaId: $ghsaId) {
-                    ghsaId
-                    summary
-                    description
-                    severity
-                    publishedAt
-                    updatedAt
-                    permalink
-                    identifiers { type value }
-                    references { url }
-                    cwes(first: 10) { nodes { cweId } }
-                    withdrawnAt
-                    cvssSeverities { cvssV3 { score vectorString } cvssV4 { score vectorString } }
-                  }
-                }
-                GRAPHQL,
-                ['ghsaId' => $vulnId],
-            );
+            // A CVE id is looked up through the advisory's identifiers — the
+            // way to learn a CVE's GHSA (and the rest of its aliases) when
+            // the feed that reported the CVE carried none.
+            $data = VulnerabilityData::isCveId($vulnId)
+                ? $this->graphql(
+                    "query(\$cve: String!) { securityAdvisories(identifier: {type: CVE, value: \$cve}, first: 1) { nodes { {$fields} } } }",
+                    ['cve' => $vulnId],
+                )
+                : $this->graphql(
+                    "query(\$ghsaId: String!) { securityAdvisory(ghsaId: \$ghsaId) { {$fields} } }",
+                    ['ghsaId' => $vulnId],
+                );
+            if (isset($data['data']['securityAdvisories'])) {
+                $data['data']['securityAdvisory'] = $data['data']['securityAdvisories']['nodes'][0] ?? null;
+            }
 
             if (! empty($data['errors']) && ! isset($data['data']['securityAdvisory'])) {
                 $type = (string) ($data['errors'][0]['type'] ?? '');
@@ -291,8 +307,9 @@ class GitHubAdvisorySource extends AbstractSource
             }
 
             $advisory = $data['data']['securityAdvisory'] ?? null;
+            $this->cacheLookup('github|id|'.$vulnId, is_array($advisory) ? $advisory : []);
 
-            return $advisory ? $this->parseAdvisory($advisory, [], null) : null;
+            return is_array($advisory) ? $this->parseAdvisory($advisory, [], null) : null;
         } catch (GuzzleException $e) {
             // Fail safe: "GitHub is down / rate-limiting" ≠ "unknown advisory".
             throw new \RuntimeException("GitHub advisory lookup failed for {$vulnId}: {$e->getMessage()}", 0, $e);

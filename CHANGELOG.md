@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.21.0
+
+### Added
+- `VulnSearch::completeAliases()` (config `vulns.complete_aliases`): CVE-only records are looked
+  up once by id on OSV / GitHub after the merge, so a CVE reported by NVD or CVE-Search gains its
+  GHSA / GO- / PYSEC- aliases (and any gap the lookup fills). Off by default; bounded per search;
+  a failing feed lands in `errors()`.
+- `GitHubAdvisorySource::fetchById()` accepts CVE ids (looked up through the advisory's CVE
+  identifier); `knowsId()` reflects it.
+- `VulnerabilityData::altId()` (GHSA first, else the first other alias) and `ghsaId()`.
+- `fetchById()` answers on OSV and GitHub are cached per id — "no such id" included —
+  under the same `result_cache_ttl` as product lookups.
+
 ## 1.20.1
 
 ### Fixed
