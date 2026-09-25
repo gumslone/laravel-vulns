@@ -234,6 +234,37 @@ class CveSearchSource extends AbstractSource
         return $items;
     }
 
+    /** The first of several spellings of a key that is present and non-empty. */
+    private static function first(array $item, string ...$keys): mixed
+    {
+        foreach ($keys as $key) {
+            if (isset($item[$key]) && $item[$key] !== '' && $item[$key] !== []) {
+                return $item[$key];
+            }
+        }
+
+        return null;
+    }
+
+    private static function float(mixed $value): ?float
+    {
+        return is_numeric($value) ? (float) $value : null;
+    }
+
+    private static function string(mixed $value): ?string
+    {
+        return is_string($value) && trim($value) !== '' ? trim($value) : (is_numeric($value) ? (string) $value : null);
+    }
+
+    private static function date(?string $value): ?\DateTime
+    {
+        try {
+            return $value !== null ? new \DateTime($value) : null;
+        } catch (\Exception) {
+            return null; // an unparseable stamp is no reason to drop the CVE
+        }
+    }
+
     private function parseCve(array $item, ?string $product = null): ?VulnerabilityData
     {
         $vulnId = $item['id'] ?? $item['cveMetadata']['cveId'] ?? null;
@@ -247,14 +278,19 @@ class CveSearchSource extends AbstractSource
             ?? collect($cna['descriptions'] ?? [])->firstWhere('lang', 'en')['value']
             ?? null;
 
-        $cvssV3Score = null;
-        $cvssV3Vector = null;
-        $cvssV4Score = null;
-        $cvssV4Vector = null;
-        if (isset($item['cvss3'])) {
-            $cvssV3Score = (float) $item['cvss3'];
-            $cvssV3Vector = $item['cvss3-vector'] ?? null;
-        } else {
+        // Flat records spell their keys differently across cve-search
+        // generations and forks: "cvss3-vector" (classic), "cvss3Vector"
+        // (Vulnerability-Lookup / newer self-hosted instances), "cvss4Vector".
+        $flat = fn (string ...$keys) => self::first($item, ...$keys);
+
+        $cvssV3Score = self::float($flat('cvss3', 'cvss3Score', 'cvss3_score'));
+        $cvssV3Vector = self::string($flat('cvss3-vector', 'cvss3Vector', 'cvss3_vector', 'cvssV3Vector'));
+        $cvssV4Score = self::float($flat('cvss4', 'cvss4Score', 'cvss4_score'));
+        $cvssV4Vector = self::string($flat('cvss4-vector', 'cvss4Vector', 'cvss4_vector', 'cvssV4Vector'));
+        $cvssV2Score = self::float($flat('cvss', 'cvss2', 'cvssScore', 'cvss_score'));
+        $cvssV2Vector = self::string($flat('cvss-vector', 'cvssVector', 'cvss_vector', 'cvss2Vector', 'cvssV2Vector'));
+
+        if ($cvssV3Score === null && $cvssV3Vector === null && $cvssV4Score === null && $cvssV4Vector === null) {
             // CNA-supplied metrics first, then ADP enrichment (NVD/CISA often
             // attach CVSS in containers.adp rather than containers.cna)
             $metricSets = collect($cna['metrics'] ?? [])
@@ -277,23 +313,26 @@ class CveSearchSource extends AbstractSource
             }
         }
 
-        $cvssV2Score = isset($item['cvss']) ? (float) $item['cvss'] : null;
-
         $severity = SeverityLevel::fromCvssScore($cvssV4Score ?? $cvssV3Score ?? $cvssV2Score);
 
-        $references = $item['references']
-            ?? array_column($cna['references'] ?? [], 'url');
+        $references = $item['references'] ?? array_column($cna['references'] ?? [], 'url');
+        $references = is_array($references) ? $references : [];
 
         $cwes = array_values(array_filter(array_map(
             fn ($pt) => collect($pt['descriptions'] ?? [])->first()['cweId'] ?? null,
             $cna['problemTypes'] ?? [],
         )));
-        if (isset($item['cwe']) && str_starts_with($item['cwe'], 'CWE-')) {
-            $cwes[] = $item['cwe'];
+        // `cwe` is a string on classic instances and a LIST on newer ones
+        // (and sometimes "NVD-CWE-Other" / "Unknown", which is no CWE).
+        foreach ((array) ($item['cwe'] ?? []) as $cwe) {
+            $cwe = is_array($cwe) ? ($cwe['id'] ?? $cwe['cweId'] ?? null) : $cwe;
+            if (is_string($cwe) && preg_match('/^CWE-\d+$/i', trim($cwe))) {
+                $cwes[] = strtoupper(trim($cwe));
+            }
         }
 
-        $published = $item['Published'] ?? $item['cveMetadata']['datePublished'] ?? null;
-        $modified = $item['Modified'] ?? $item['cveMetadata']['dateUpdated'] ?? null;
+        $published = self::string($flat('Published', 'published', 'publishedAt', 'datePublished')) ?? $item['cveMetadata']['datePublished'] ?? null;
+        $modified = self::string($flat('Modified', 'modified', 'lastModified', 'last-modified', 'updatedAt', 'dateUpdated')) ?? $item['cveMetadata']['dateUpdated'] ?? null;
 
         return new VulnerabilityData(
             vulnId: $vulnId,
@@ -304,15 +343,15 @@ class CveSearchSource extends AbstractSource
             cvssV3Score: $cvssV3Score,
             cvssV3Vector: $cvssV3Vector,
             cvssV2Score: $cvssV2Score,
-            cvssV2Vector: $item['cvss-vector'] ?? null,
+            cvssV2Vector: $cvssV2Vector,
             cvssV4Score: $cvssV4Score,
             cvssV4Vector: $cvssV4Vector,
             // CVE 5 records keep REJECTED ids resolvable; they must not look live.
             isWithdrawn: strcasecmp((string) ($item['cveMetadata']['state'] ?? ''), 'REJECTED') === 0,
             references: array_map(fn ($url) => ['type' => null, 'url' => is_array($url) ? ($url['url'] ?? '') : $url], $references),
             cwes: array_values(array_unique($cwes)),
-            sourcePublishedAt: $published ? new \DateTime($published) : null,
-            sourceModifiedAt: $modified ? new \DateTime($modified) : null,
+            sourcePublishedAt: self::date($published),
+            sourceModifiedAt: self::date($modified),
             sourceUrl: "https://cve.circl.lu/cve/{$vulnId}",
             rawDataChecksum: hash('sha256', json_encode($item)),
             affectedRanges: $this->extractRanges($item, $product),

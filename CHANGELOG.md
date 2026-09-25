@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.20.1
+
+### Fixed
+- CVE-Search: newer / self-hosted instances (Vulnerability-Lookup) spell the flat record's
+  keys in camelCase (`cvssVector`, `cvss3Vector`, `cvss4Vector`, `published`, `lastModified`)
+  and send `cwe` as a list. The vectors were dropped and the list made every lookup throw —
+  so no CVE arrived at all. All spellings are read now; `cwe` may be a string, a list of
+  strings or a list of `{id}` objects (non-CWE markers like `NVD-CWE-Other` are ignored);
+  a flat v4 vector lands in the v4 slot; an unparseable date no longer drops the record.
+
 ## 1.20.0
 
 ### Added
