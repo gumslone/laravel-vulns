@@ -61,6 +61,10 @@ class AuditCommand extends Command
             return self::INVALID;
         }
 
+        if ($format === 'table') {
+            $this->paceHints($search, count($packages));
+        }
+
         $report = $search->report($packages);
 
         // Unscored advisories are kept: "unknown" is not "harmless".
@@ -93,6 +97,23 @@ class AuditCommand extends Command
         }
 
         return $report->isComplete() || $this->option('ignore-errors') ? self::SUCCESS : self::INCONCLUSIVE;
+    }
+
+    /**
+     * NVD without a key is one request per six seconds — an audit of a
+     * typical lockfile takes minutes, which looks like a hang. Say so.
+     */
+    private function paceHints(VulnSearch $search, int $packages): void
+    {
+        $nvdSearched = in_array('nvd', $search->enabledSources(), true);
+        if ($nvdSearched && ! config('vulns.nvd.api_key')) {
+            $window = max(1, (int) config('vulns.nvd.rate_limit_window', 30));
+            $perWindow = max(1, (int) (config('vulns.nvd.rate_limit_max') ?: 5));
+            $this->components->warn(sprintf(
+                'NVD without NVD_API_KEY is paced to %d requests per %d s — expect up to ~%d min for %d packages. A free key (https://nvd.nist.gov/developers/request-an-api-key) makes it 10× faster.',
+                $perWindow, $window, (int) ceil($packages * $window / $perWindow / 60), $packages,
+            ));
+        }
     }
 
     /** @return array{0: array<string, PackageData>, 1: array<string, string>} [packages, lockfile per package key] */

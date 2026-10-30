@@ -28,13 +28,18 @@ class CveSearchSource extends AbstractSource
 {
     use ResolvesLookupCpe;
 
+    public const DEFAULT_BASE_URL = 'https://cve.circl.lu/api';
+
+    private string $uiBase;
+
     public function __construct(private readonly CpeResolver $cpeResolver, private readonly ?CpeLookup $cpeLookup = null, ?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
-        $this->http = $http ?? $this->makeClient(
-            rtrim((string) $this->config('base_url', 'https://cve.circl.lu/api'), '/').'/',
-            options: ['verify' => (bool) $this->config('verify_tls', true)],
-        );
+        $base = rtrim((string) $this->config('base_url', self::DEFAULT_BASE_URL), '/');
+        // Record links point at the instance that answered: a self-hosted
+        // Vulnerability-Lookup / cve-search serves its UI next to /api.
+        $this->uiBase = $base === self::DEFAULT_BASE_URL ? 'https://cve.circl.lu' : (preg_replace('#/api$#', '', $base) ?? $base);
+        $this->http = $http ?? $this->makeClient($base.'/', options: ['verify' => (bool) $this->config('verify_tls', true)]);
     }
 
     public function name(): string
@@ -352,7 +357,7 @@ class CveSearchSource extends AbstractSource
             cwes: array_values(array_unique($cwes)),
             sourcePublishedAt: self::date($published),
             sourceModifiedAt: self::date($modified),
-            sourceUrl: "https://cve.circl.lu/cve/{$vulnId}",
+            sourceUrl: $this->uiBase.'/cve/'.rawurlencode($vulnId),
             rawDataChecksum: hash('sha256', json_encode($item)),
             affectedRanges: $this->extractRanges($item, $product),
             extra: ['vulnerable_configuration' => $item['vulnerable_configuration'] ?? []],
@@ -364,50 +369,60 @@ class CveSearchSource extends AbstractSource
      * aggregator can prove an installed version outside every range and drop
      * the false positive (this source matches by name only).
      *
-     * Handles both record shapes: CVE 5.x `containers.cna.affected[].versions[]`
-     * and the NVD-API `configurations` node with cpeMatch
-     * versionStartIncluding / versionEndIncluding bounds.
+     * Reads every place a CVE 5.x record keeps version data: the CNA's
+     * `containers.cna.affected[].versions[]`, the CISA ADP "Vulnrichment"
+     * block (`containers.adp[].affected[]`, often the ONLY structured data on
+     * an old MITRE-assigned CVE), the embedded legacy v4 record
+     * (`x_legacyV4Record.affects…version_data[]`), and the NVD-API
+     * `configurations` node of self-hosted / fkie records.
      *
      * Fail-safe: any entry that says "affected" but carries no expressible
      * bound makes the WHOLE record undeterminable ([]) — partial ranges would
-     * let VersionRange wrongly prove "not affected".
+     * let VersionRange wrongly prove "not affected". The MITRE placeholder
+     * row (`vendor: n/a, product: n/a, version: n/a`) is no statement at all,
+     * so it neither blocks the other blocks nor counts as a bound.
      *
      * @return array<int, array{range: string, source: string}>
      */
     private function extractRanges(array $item, ?string $product): array
     {
-        $entries = $item['containers']['cna']['affected'] ?? [];
-
-        // A CVE can list several products; keep only the queried one when the
-        // names line up. If none match, keep all — ORing a sibling product's
-        // ranges can only over-flag, never clear a real hit.
-        if ($product !== null && $entries !== []) {
-            $matching = array_values(array_filter($entries, fn ($e) => strcasecmp(
-                (string) ($e['product'] ?? $e['packageName'] ?? ''), $product) === 0));
-            if ($matching !== []) {
-                $entries = $matching;
-            }
+        $cna = $item['containers']['cna'] ?? [];
+        $blocks = [$cna['affected'] ?? []];
+        foreach ($item['containers']['adp'] ?? [] as $adp) {
+            $blocks[] = $adp['affected'] ?? [];
         }
 
         $ranges = [];
-        foreach ($entries as $entry) {
-            $versions = collect($entry['versions'] ?? [])
-                ->filter(fn ($v) => is_array($v) && ($v['status'] ?? 'affected') === 'affected');
+        foreach ($blocks as $entries) {
+            $entries = array_values(array_filter((array) $entries, fn ($e) => is_array($e) && ! self::isPlaceholderEntry($e)));
+            $entries = $this->forProduct($entries, $product);
 
-            // "This product is affected" with no affected version rows —
-            // either no version data or inverted defaultStatus/unaffected
-            // listing we can't express. Undeterminable.
-            if ($versions->isEmpty()) {
-                return [];
-            }
+            foreach ($entries as $entry) {
+                $versions = collect($entry['versions'] ?? [])
+                    ->filter(fn ($v) => is_array($v) && ($v['status'] ?? 'affected') === 'affected');
 
-            foreach ($versions as $v) {
-                $range = $this->rangeFromVersionEntry($v);
-                if ($range === null) {
+                // "This product is affected" with no affected version rows —
+                // either no version data or inverted defaultStatus/unaffected
+                // listing we can't express. Undeterminable.
+                if ($versions->isEmpty()) {
                     return [];
                 }
-                $ranges[] = ['range' => $range, 'source' => $this->name()];
+
+                foreach ($versions as $v) {
+                    $range = $this->rangeFromVersionEntry($v);
+                    if ($range === null) {
+                        return [];
+                    }
+                    $ranges[] = ['range' => $range, 'source' => $this->name()];
+                }
             }
+        }
+
+        foreach ($this->legacyRanges($cna['x_legacyV4Record'] ?? [], $product) as $range) {
+            if ($range === null) {
+                return [];
+            }
+            $ranges[] = ['range' => $range, 'source' => $this->name()];
         }
 
         foreach ($this->cpeMatchRanges($item) as $range) {
@@ -418,6 +433,53 @@ class CveSearchSource extends AbstractSource
         }
 
         return $ranges;
+    }
+
+    /**
+     * A CVE can list several products; keep only the queried one when the
+     * names line up (ADP rows also carry `cpes`, whose product segment is
+     * exactly what we searched by). If none match, keep all — ORing a
+     * sibling product's ranges can only over-flag, never clear a real hit.
+     *
+     * @param  array<int, array<string, mixed>>  $entries
+     * @return array<int, array<string, mixed>>
+     */
+    private function forProduct(array $entries, ?string $product): array
+    {
+        if ($product === null || $entries === []) {
+            return $entries;
+        }
+
+        $matching = array_values(array_filter($entries, function (array $e) use ($product): bool {
+            if (strcasecmp((string) ($e['product'] ?? $e['packageName'] ?? ''), $product) === 0) {
+                return true;
+            }
+            foreach ((array) ($e['cpes'] ?? []) as $cpe) {
+                if (is_string($cpe) && strcasecmp((string) (explode(':', $cpe)[4] ?? ''), $product) === 0) {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
+
+        return $matching !== [] ? $matching : $entries;
+    }
+
+    /** The MITRE "no data" row: every identifying field is n/a or empty. */
+    private static function isPlaceholderEntry(array $entry): bool
+    {
+        $na = fn (mixed $value): bool => in_array(strtolower(trim((string) $value)), ['', 'n/a', '-', 'unspecified'], true);
+        if (! $na($entry['product'] ?? '') || ! $na($entry['vendor'] ?? '') || ! empty($entry['cpes'])) {
+            return false;
+        }
+        foreach ((array) ($entry['versions'] ?? []) as $v) {
+            if (! is_array($v) || ! $na($v['version'] ?? '') || isset($v['lessThan']) || isset($v['lessThanOrEqual'])) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -435,7 +497,7 @@ class CveSearchSource extends AbstractSource
 
         // Legacy CNA freetext: "through 0.18.0" = inclusive upper bound,
         // "before 1.2.3" = exclusive upper bound
-        if (preg_match('/^(through|before)\s+(\S+)$/i', $version, $m)) {
+        if (preg_match('/^(through|before|prior to)\s+(\S+)$/i', $version, $m)) {
             return (strtolower($m[1]) === 'through' ? '<= ' : '< ').$m[2];
         }
 
@@ -452,7 +514,86 @@ class CveSearchSource extends AbstractSource
             return $noLower ? "{$op} {$v[$key]}" : ">= {$version}, {$op} {$v[$key]}";
         }
 
-        return $noLower ? null : "= {$version}";
+        return $noLower ? null : self::singleVersion($version);
+    }
+
+    /**
+     * A lone version as a constraint. A bare "8" or "5.1" on an affected
+     * row names a release LINE, not one build (ADP writes "8" for 8.x), so
+     * it becomes the prefix range — zero-padded "= 8.0.0" would clear 8.5.0.
+     */
+    private static function singleVersion(string $version): ?string
+    {
+        if (preg_match('/^v?(\d+)(?:\.(\d+))?$/', $version, $m)) {
+            $next = isset($m[2]) ? "{$m[1]}.".((int) $m[2] + 1) : (string) ((int) $m[1] + 1);
+
+            return ">= {$version}, < {$next}";
+        }
+
+        // "5.5.x" (and "5.5.*"): the whole minor line
+        if (preg_match('/^v?(\d+(?:\.\d+)*)\.[x*]$/i', $version, $m)) {
+            $parts = explode('.', $m[1]);
+            $parts[count($parts) - 1] = (string) ((int) end($parts) + 1);
+
+            return ">= {$m[1]}, < ".implode('.', $parts);
+        }
+
+        if (preg_match('/^v?\d[\w.+\-]*$/', $version)) {
+            return "= {$version}";
+        }
+
+        return null; // freetext we can't read — undeterminable, never "not affected"
+    }
+
+    /**
+     * The CVE 4.0 record MITRE embeds in converted CVEs
+     * (`affects.vendor.vendor_data[].product.product_data[].version.version_data[]`):
+     * `version_affected` is an operator ("<", "<=", "=", ">=", "!<" …) and
+     * `version_value` the version — or freetext like "5.5.x before 5.5.21".
+     * Yields null for an affirmative row without a readable bound.
+     *
+     * @return iterable<int, ?string>
+     */
+    private function legacyRanges(array $legacy, ?string $product): iterable
+    {
+        $products = [];
+        foreach ($legacy['affects']['vendor']['vendor_data'] ?? [] as $vendor) {
+            foreach ($vendor['product']['product_data'] ?? [] as $row) {
+                $products[] = $row;
+            }
+        }
+        if ($product !== null) {
+            $own = array_values(array_filter($products, fn ($p) => strcasecmp((string) ($p['product_name'] ?? ''), $product) === 0));
+            $products = $own ?: $products;
+        }
+
+        foreach ($products as $row) {
+            foreach ($row['version']['version_data'] ?? [] as $v) {
+                if (! is_array($v)) {
+                    continue;
+                }
+                $value = trim((string) ($v['version_value'] ?? ''));
+                $op = trim((string) ($v['version_affected'] ?? ''));
+                if (in_array(strtolower($value), ['', 'n/a', '-', 'unspecified'], true)) {
+                    continue; // the placeholder: no statement
+                }
+                if (str_starts_with($op, '!')) {
+                    continue; // "!<" = NOT affected below — says nothing about what IS
+                }
+                if (in_array($op, ['<', '<=', '>', '>='], true) && preg_match('/^v?\d[\w.+\-]*$/', $value)) {
+                    yield "{$op} {$value}";
+
+                    continue;
+                }
+                if (preg_match('/^v?(\d+(?:\.\d+)*)\.[x*]\s+(before|prior to|through)\s+(\S+)$/i', $value, $m)) {
+                    yield ">= {$m[1]}, ".(strtolower($m[2]) === 'through' ? '<= ' : '< ').$m[3];
+
+                    continue;
+                }
+
+                yield $this->rangeFromVersionEntry(['version' => $value]);
+            }
+        }
     }
 
     /**

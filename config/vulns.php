@@ -58,6 +58,26 @@ return [
         'max' => (int) env('VULNS_COMPLETE_ALIASES_MAX', 50),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Complete version ranges
+    |--------------------------------------------------------------------------
+    | Name-matched feeds (CVE-Search, Shodan, GitHub repository advisories)
+    | return every CVE a product ever had, and an old record often carries no
+    | version data ("n/a") — it can't be cleared, so it would be reported
+    | against today's release. Records the version filter can't judge are
+    | looked up once by id on these sources (GitHub advisory ranges, NVD CPE
+    | configurations) and judged again. One request per such advisory per
+    | source, at most `max` per search; NVD paces itself (6 s per request
+    | without NVD_API_KEY). On by default: this is what keeps vulns:audit
+    | from listing 2018 CVEs against a 2026 release.
+    */
+    'complete_ranges' => [
+        'enabled' => env('VULNS_COMPLETE_RANGES', true),
+        'sources' => ['github', 'nvd'],
+        'max' => (int) env('VULNS_COMPLETE_RANGES_MAX', 50),
+    ],
+
     // Dispatch Events\SourceFailed / Events\SearchCompleted through Laravel's
     // event dispatcher (listen for them like any other event).
     'events' => env('VULNS_EVENTS', true),
@@ -126,9 +146,14 @@ return [
         'base_url' => env('VULNS_NVD_URL', 'https://services.nvd.nist.gov/rest/json'),
         // Product lookups are cached (complete answers only); 0 disables.
         'result_cache_ttl' => (int) env('VULNS_NVD_RESULT_CACHE_TTL', 3600),
-        // 5 requests/30s anonymous, 50/30s with a key.
-        'rate_limit_window' => 30,
+        // NVD allows 5 requests per ROLLING 30 s anonymously, 50 with a key,
+        // and asks for six seconds between anonymous requests. The source
+        // paces itself to both (rate_limit_max defaults by key presence;
+        // min_interval defaults to window / max) — lower them only for a
+        // mirror of your own.
+        'rate_limit_window' => (int) env('VULNS_NVD_RATE_WINDOW', 30),
         'rate_limit_max' => env('VULNS_NVD_RATE_MAX'),
+        'min_interval' => env('VULNS_NVD_MIN_INTERVAL'),
     ],
 
     'cve_search' => [

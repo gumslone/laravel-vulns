@@ -101,3 +101,23 @@ it('resolves the Vulns facade and dispatches search events', function () {
         ->and($seen[1])->toBeInstanceOf(SearchCompleted::class)
         ->and($search->only('nvd')->listen(null))->toBeInstanceOf(VulnSearch::class);
 });
+
+it('warns that an unkeyed NVD paces the audit, in the table output only', function () {
+    [$composer] = auditFixtures();
+    bindAudit([new FakeSource('nvd')]);
+
+    Artisan::call('vulns:audit', ['--lock' => [$composer]]);
+    expect(Artisan::output())->toContain('NVD without NVD_API_KEY')->toContain('request-an-api-key');
+
+    Artisan::call('vulns:audit', ['--lock' => [$composer], '--format' => 'json']);
+    expect(Artisan::output())->not->toContain('NVD_API_KEY');
+
+    config(['vulns.nvd.api_key' => 'k']);
+    Artisan::call('vulns:audit', ['--lock' => [$composer]]);
+    expect(Artisan::output())->not->toContain('NVD_API_KEY');
+
+    bindAudit([new FakeSource('osv')]);
+    config(['vulns.nvd.api_key' => null]);
+    Artisan::call('vulns:audit', ['--lock' => [$composer]]);
+    expect(Artisan::output())->not->toContain('NVD_API_KEY');
+});

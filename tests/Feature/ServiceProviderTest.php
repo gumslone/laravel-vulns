@@ -62,3 +62,13 @@ it('publishes the config file under the vulns-config tag', function () {
     expect($paths)->not->toBeEmpty()
         ->and(array_key_first($paths))->toEndWith('config/vulns.php');
 });
+
+it('turns range completion on by default (GitHub, then NVD) and lets config switch it off', function () {
+    $setting = fn () => (new ReflectionProperty(VulnSearch::class, 'completeRanges'))->getValue(app(VulnSearch::class));
+
+    expect($setting())->toBe(['sources' => ['github', 'nvd'], 'max' => 50]);
+
+    config(['vulns.complete_ranges.enabled' => false]);
+    app()->forgetInstance(VulnSearch::class);
+    expect($setting())->toBeNull();
+});

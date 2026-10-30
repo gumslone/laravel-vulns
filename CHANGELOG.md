@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.22.0
+
+### Fixed
+- **NVD rate limiting**: the pacer counted requests per calendar window, so up to twice the
+  budget could land within seconds across a window boundary — NVD answers that with 403 /
+  "too many connections" and `vulns:audit` died on it. `NvdSource` now keeps a ROLLING window
+  (5 requests / 30 s anonymous, 50 with a key), spaces requests the way NVD asks (6 s without a
+  key, 0.6 s with one; `min_interval`), shares the budget between workers through the cache,
+  and retries a 403 / 429 / 503 after a full window instead of half a second later.
+  `vulns:audit` warns up front how long an unkeyed NVD pass will take.
+- **CVE-Search false positives**: records whose CNA block is the MITRE placeholder
+  (`vendor/product/version: n/a`) were "affected, no bound" — undeterminable, so a 2018 CVE
+  was reported against every later release. The placeholder is now no statement; the CISA
+  ADP "Vulnrichment" block (`containers.adp[].affected`, matched by product or `cpes`) and
+  the embedded legacy v4 record (`version_affected` + `version_value`, "5.5.x before 5.5.21",
+  "through 8.70.2") are read; a lone "8" / "5.1" on an affected row is its release line
+  (`>= 8, < 9`), not the single build 8.0.0 that zero-padding would clear 8.5.0 against.
+- CVE-Search record links follow a configured `base_url` (a self-hosted instance's own UI)
+  instead of always pointing at cve.circl.lu.
+
+### Added
+- `VulnSearch::completeRanges()` (config `vulns.complete_ranges`, **on by default** in
+  Laravel): advisories the version filter cannot judge are looked up once by id on GitHub and
+  NVD and judged again — only a proven "outside every range naming the package" drops one.
+  A record whose own ranges could not be read ("0.0.0 to unspecified"), or that only says
+  "affected from X" with no upper bound (a CNA's disclosure-time "no fix known"), takes the
+  lookup's ranges as its evidence — the merge would otherwise keep the record's own and NVD's
+  `< 1.16.0` would never get a vote. Bounded per search (`max`, reported under `errors()['ranges']`); a
+  failing feed lands under its name. This is what clears `CVE-2020-19316` ("Laravel before
+  5.8.17") and `CVE-2020-7776` from a current audit.
+- `VulnSearch::enabledSources()`.
+- `RetryHandlerFactory::stack()` / `middleware()` take the 4xx statuses that mean "slow down"
+  for an API and a cap on one back-off pause; `AbstractSource::makeClient()` accepts a
+  source-specific handler.
+- README: a table of every source's base-URL override (`VULNS_*_URL`) for mirrors and
+  self-hosted instances; NVD pacing knobs (`VULNS_NVD_RATE_WINDOW`, `VULNS_NVD_RATE_MAX`,
+  `VULNS_NVD_MIN_INTERVAL`).
+
 ## 1.21.0
 
 ### Added

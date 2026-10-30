@@ -55,6 +55,8 @@ class VulnSearch
         private readonly ?\Closure $listener = null,
         /** @var array{sources: string[], max: int}|null null = off */
         private readonly ?array $completeAliases = null,
+        /** @var array{sources: string[], max: int}|null null = off */
+        private readonly ?array $completeRanges = null,
     ) {
         $this->priority = array_values(array_map('strtolower', $priority ?? self::DEFAULT_PRIORITY));
     }
@@ -86,7 +88,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => in_array($s->name(), $wanted, true),
-        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
+        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases, $this->completeRanges);
     }
 
     /**
@@ -102,7 +104,7 @@ class VulnSearch
         return new self(array_values(array_filter(
             $this->all(),
             fn (Source $s) => ! in_array($s->name(), $unwanted, true),
-        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
+        )), $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases, $this->completeRanges);
     }
 
     /**
@@ -115,7 +117,7 @@ class VulnSearch
      */
     public function prioritize(string|array $names): self
     {
-        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
+        return new self($this->sources, (array) $names, $this->preferLatest, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases, $this->completeRanges);
     }
 
     /**
@@ -126,7 +128,7 @@ class VulnSearch
      */
     public function preferLatest(bool $prefer = true): self
     {
-        return new self($this->sources, $this->priority, $prefer, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
+        return new self($this->sources, $this->priority, $prefer, $this->enricher, $this->filterByVersion, $this->listener, $this->completeAliases, $this->completeRanges);
     }
 
     /**
@@ -135,7 +137,7 @@ class VulnSearch
      */
     public function withEnricher(?ThreatEnricher $enricher): self
     {
-        return new self($this->sources, $this->priority, $this->preferLatest, $enricher, $this->filterByVersion, $this->listener, $this->completeAliases);
+        return new self($this->sources, $this->priority, $this->preferLatest, $enricher, $this->filterByVersion, $this->listener, $this->completeAliases, $this->completeRanges);
     }
 
     /**
@@ -147,7 +149,7 @@ class VulnSearch
      */
     public function filterByVersion(bool $filter = true): self
     {
-        return new self($this->sources, $this->priority, $this->preferLatest, $this->enricher, $filter, $this->listener, $this->completeAliases);
+        return new self($this->sources, $this->priority, $this->preferLatest, $this->enricher, $filter, $this->listener, $this->completeAliases, $this->completeRanges);
     }
 
     /**
@@ -163,7 +165,7 @@ class VulnSearch
     {
         return new self(
             $this->sources, $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion,
-            $listener === null ? null : $listener(...), $this->completeAliases,
+            $listener === null ? null : $listener(...), $this->completeAliases, $this->completeRanges,
         );
     }
 
@@ -192,7 +194,38 @@ class VulnSearch
 
         return new self(
             $this->sources, $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion,
-            $this->listener, $setting,
+            $this->listener, $setting, $this->completeRanges,
+        );
+    }
+
+    /**
+     * A copy that completes the version ranges of records that have none —
+     * so the version filter can judge them. CVE-Search (and Shodan, GitHub
+     * repository advisories) match by package NAME and hand back every CVE
+     * the product ever had; a 2018 CVE whose record says `version: n/a`
+     * cannot be cleared and would be reported against today's release. After
+     * the merge, every such record for a versioned package is looked up ONCE
+     * by id on the named sources (GitHub's advisory ranges, NVD's CPE
+     * configurations) and only an answer that proves the version outside
+     * every range drops it. Lookups are cached per id; $max bounds a search.
+     *
+     * The Laravel provider turns this on (config `vulns.complete_ranges`);
+     * `false` turns it off on a copy that had it. NVD is throttled — without
+     * NVD_API_KEY that is six seconds per lookup.
+     *
+     * @param  string[]|bool  $sources  source names to ask, in order — true = ['github', 'nvd']
+     */
+    public function completeRanges(array|bool $sources = true, int $max = 50): self
+    {
+        $setting = match (true) {
+            $sources === false => null,
+            $sources === true => ['sources' => ['github', 'nvd'], 'max' => $max],
+            default => ['sources' => array_values(array_map('strtolower', $sources)), 'max' => $max],
+        };
+
+        return new self(
+            $this->sources, $this->priority, $this->preferLatest, $this->enricher, $this->filterByVersion,
+            $this->listener, $this->completeAliases, $setting,
         );
     }
 
@@ -214,15 +247,126 @@ class VulnSearch
                 }
             }
         }
-        $ids = array_slice(array_keys($wanted), 0, max(0, $this->completeAliases['max']));
-        if ($ids === []) {
+
+        $found = $this->lookupByIds(array_keys($wanted), $this->completeAliases, 'aliases', 'CVEs', 'alias lookup');
+
+        return $found === [] ? $results : $this->fillFrom($results, $found);
+    }
+
+    /**
+     * Records the version filter could not judge (no range, or none it can
+     * read) are looked up by id on sources that know version ranges, then
+     * judged again — see completeRanges().
+     *
+     * @param  PackageData[]  $packages
+     * @param  array<array-key, VulnerabilityData[]>  $results
+     * @return array<array-key, VulnerabilityData[]>
+     */
+    private function completeVersionRanges(array $packages, array $results): array
+    {
+        if ($this->completeRanges === null || ! $this->filterByVersion) {
             return $results;
         }
-        if (count($wanted) > count($ids)) {
-            $this->errors['aliases'] = sprintf('%d of %d CVEs left without alias lookup (max %d per search)', count($wanted) - count($ids), count($wanted), count($ids));
+
+        $wanted = [];
+        foreach ($results as $key => $vulns) {
+            $package = $packages[$key] ?? null;
+            if ($package === null || $package->version === null || trim($package->version) === '') {
+                continue;
+            }
+            foreach ($vulns as $vuln) {
+                if ($this->needsRangeLookup($package, $vuln)) {
+                    $wanted[$vuln->vulnId] = true;
+                }
+            }
         }
 
-        $sources = array_filter($this->all(), fn (Source $s) => $s->isEnabled() && in_array($s->name(), $this->completeAliases['sources'], true));
+        $found = $this->lookupByIds(array_keys($wanted), $this->completeRanges, 'ranges', 'advisories', 'range lookup');
+        if ($found === []) {
+            return $results;
+        }
+
+        $results = $this->fillFrom($results, $found);
+        foreach ($results as $key => $vulns) {
+            if (! isset($packages[$key])) {
+                continue;
+            }
+            $package = $packages[$key];
+            $results[$key] = $this->affecting($package, array_map(function (VulnerabilityData $vuln) use ($package, $found): VulnerabilityData {
+                if (! isset($found[$vuln->vulnId]) || ! $this->needsRangeLookup($package, $vuln)) {
+                    return $vuln;
+                }
+                // The record's own ranges could not judge this version — that
+                // is why it was looked up — and the merge keeps a base's
+                // ranges over the other's, so a readable answer would never
+                // get a vote ("0.0.0 to unspecified" next to NVD's "< 1.16.0").
+                // For such a record the lookup's ranges are the evidence.
+                $ranges = array_merge(...array_map(fn (VulnerabilityData $extra) => $extra->affectedRanges, $found[$vuln->vulnId]));
+
+                return $ranges === [] ? $vuln : VulnerabilityData::fromArray(['affected_ranges' => $ranges] + $vuln->toArray());
+            }, $vulns));
+        }
+
+        return $results;
+    }
+
+    /**
+     * Worth a by-id lookup: the record's ranges can't judge the version, or
+     * every range that speaks about the package is open-ended ("affected
+     * from 0.0.0", "lessThan: unspecified") — a CNA's disclosure-time "no
+     * fix known", which NVD's later analysis bounds ("< 1.16.0").
+     */
+    private function needsRangeLookup(PackageData $package, VulnerabilityData $vuln): bool
+    {
+        $ranges = VersionRange::relevantTo($vuln->affectedRanges, $package->name);
+        if (VersionRange::isVulnerable($package->version, $ranges) === null) {
+            return true;
+        }
+
+        $constraints = array_values(array_filter(array_map(
+            fn ($r) => is_array($r) ? ($r['range'] ?? null) : $r, $ranges,
+        ), 'is_string'));
+
+        return $constraints !== [] && count(array_filter($constraints, self::isOpenEnded(...))) === count($constraints);
+    }
+
+    /**
+     * No readable upper bound: ">= 1.0", "> 1.0", or "0.0.0 to unspecified"
+     * — "from here on, fix unknown". A "<" whose version can't be read is
+     * no bound either.
+     */
+    private static function isOpenEnded(string $constraint): bool
+    {
+        foreach (array_map('trim', explode(',', $constraint)) as $clause) {
+            if (preg_match('/^[<=]=?\s*v?\d/i', $clause) === 1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Ask the named sources about each id once; a failing feed lands in
+     * errors() and is not asked again this search. The `max` cap is
+     * reported under $errorKey so a capped search never reads as complete.
+     *
+     * @param  string[]  $ids
+     * @param  array{sources: string[], max: int}  $setting
+     * @return array<string, VulnerabilityData[]> id => answers
+     */
+    private function lookupByIds(array $ids, array $setting, string $errorKey, string $noun, string $what): array
+    {
+        $all = count($ids);
+        $ids = array_slice($ids, 0, max(0, $setting['max']));
+        if ($ids === []) {
+            return [];
+        }
+        if ($all > count($ids)) {
+            $this->errors[$errorKey] = sprintf('%d of %d %s left without %s (max %d per search)', $all - count($ids), $all, $noun, $what, count($ids));
+        }
+
+        $sources = array_filter($this->all(), fn (Source $s) => $s->isEnabled() && in_array($s->name(), $setting['sources'], true));
         $found = [];
         foreach ($sources as $source) {
             foreach ($ids as $id) {
@@ -235,17 +379,25 @@ class VulnSearch
                     }
                 } catch (\Throwable $e) {
                     $this->errors[$source->name()] = ($this->errors[$source->name()] ?? '') === ''
-                        ? "alias lookup: {$e->getMessage()}"
+                        ? "{$what}: {$e->getMessage()}"
                         : $this->errors[$source->name()];
                     break; // a failing feed is not asked again this search
                 }
             }
         }
-        if ($found === []) {
-            return $results;
-        }
 
-        // The original record stays the base — completion fills, never rewrites.
+        return $found;
+    }
+
+    /**
+     * The original record stays the base — completion fills, never rewrites.
+     *
+     * @param  array<array-key, VulnerabilityData[]>  $results
+     * @param  array<string, VulnerabilityData[]>  $found
+     * @return array<array-key, VulnerabilityData[]>
+     */
+    private function fillFrom(array $results, array $found): array
+    {
         return array_map(fn (array $vulns) => array_map(function (VulnerabilityData $vuln) use ($found): VulnerabilityData {
             foreach ($found[$vuln->vulnId] ?? [] as $extra) {
                 $vuln = $this->mergeOrdered($vuln, $extra);
@@ -273,6 +425,17 @@ class VulnSearch
     public function availableSources(): array
     {
         return array_map(fn (Source $s) => $s->name(), $this->all());
+    }
+
+    /**
+     * Names of the sources a search will actually ask: registered, enabled,
+     * and not removed by only()/except().
+     *
+     * @return string[]
+     */
+    public function enabledSources(): array
+    {
+        return array_values(array_map(fn (Source $s) => $s->name(), array_filter($this->all(), fn (Source $s) => $s->isEnabled())));
     }
 
     /** @return Source[] every registered source, enabled or not */
@@ -434,7 +597,7 @@ class VulnSearch
             }
         }
 
-        $results = $this->enrich($this->completeIds(array_map($this->merge(...), $results)));
+        $results = $this->enrich($this->completeVersionRanges($packages, $this->completeIds(array_map($this->merge(...), $results))));
         if ($this->listener !== null) {
             $this->emit(new Events\SearchCompleted(new SearchReport($results, $this->errors, $this->coverage)));
         }

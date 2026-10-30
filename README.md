@@ -281,7 +281,7 @@ $search->search(new PackageData(name: 'lodash', version: '5.0.0', ecosystem: 'np
 // "< 1.0.0"            → dropped   (every range readable, none matches)
 // ">= 4.0.0, < 5.1.0"  → kept
 // "< 6.0.0-beta.1"     → kept      (can't be ordered — "can't tell" is never "not affected")
-// no ranges at all     → kept
+// no ranges at all     → kept — unless a by-id lookup settles it, see "Completing version ranges"
 
 $search->filterByVersion(false)->search($pkg);   // everything, unfiltered
 ```
@@ -312,6 +312,33 @@ $vuln->ghsaId();
 Off by default: it is one extra request per *new* CVE per source (lookups are
 cached by id, "no such id" included; OSV allows 60 requests a minute). A
 failing feed lands in `errors()` — the result is never dropped for it.
+
+### Completing version ranges: the 2018 CVE on your 2026 release
+
+CVE-Search (and Shodan, GitHub repository advisories) match by package
+**name** and hand back every CVE the product ever had — and an old
+MITRE-assigned record often says nothing about versions (`vendor: n/a,
+product: n/a, version: n/a`). The version filter can't clear it, so
+`vulns:audit` would list `CVE-2020-19316` ("Laravel before 5.8.17") against
+12.x forever. `completeRanges()` looks every record the filter could not judge
+up **once by id** — on GitHub (advisory ranges) and NVD (CPE configurations)
+— and judges it again. Only an answer that proves the installed version
+outside every range that names the package drops it; "NVD knows nothing
+either" keeps it.
+
+```php
+$search->completeRanges()->search($package);             // GitHub, then NVD; at most 50 lookups per search
+$search->completeRanges(['nvd'], max: 20)->search($package);
+$search->completeRanges(false)->search($package);        // off, for one call
+// globally: VULNS_COMPLETE_RANGES=false, VULNS_COMPLETE_RANGES_MAX=20
+```
+
+**On by default in Laravel** (config `vulns.complete_ranges`): it is what keeps
+the audit honest. The cost is one request per *unjudgeable* advisory per
+source, and NVD paces itself — six seconds per request without
+`NVD_API_KEY`, 0.6 s with one — so a key is worth having. A capped search
+reports it under `errors()['ranges']`; a failing feed under its own name.
+Plain PHP: off until you call it.
 
 ### Storing and rehydrating records
 
@@ -372,7 +399,12 @@ php artisan vulns:audit --format=json --lock=frontend/package-lock.json
 
 Withdrawn advisories are left out (`--include-withdrawn`), unscored ones are
 kept ("unknown" is not "harmless"), and the table names the version to upgrade
-to. Schedule it like any command:
+to. Advisories a name-matched feed reports without version data are looked up
+by id before they are listed (see "Completing version ranges"), so an old CVE
+is not reported against a release it never touched. With NVD enabled and no
+`NVD_API_KEY` the audit paces itself to NVD's five requests per 30 s and says
+so up front — a lockfile of 100 packages takes about ten minutes; with a key,
+about one. Schedule it like any command:
 
 ```php
 Schedule::command('vulns:audit --no-dev --min-severity=high')->daily()->emailOutputOnFailure('security@example.test');
@@ -400,8 +432,8 @@ $one   = $nvd->fetchById('CVE-2021-44228');         // single advisory
 | Source | Queried by | Needs | Notes |
 |---|---|---|---|
 | `OsvSource` | ecosystem + name + version; **purl** (deb/apk/rpm); **git commit** | — | Batch endpoint, pagination, payload cache. Ecosystems: composer, npm, pypi, maven, nuget, go, cargo, gem, cocoapods, pub, hex, swift, conan (+ deb/apk/rpm by purl). Unmapped ecosystems are skipped, not guessed. |
-| `NvdSource` | **CPE** | `api_key` recommended | 5 req/30s anonymous, 50/30s with a key — the source throttles itself. Parses `configurations` into real version ranges. |
-| `CveSearchSource` | **CPE** | — | CIRCL; records often carry no version data (treat as undeterminable). |
+| `NvdSource` | **CPE** | `api_key` recommended | 5 requests per *rolling* 30 s anonymous, 50 with a key — the source paces itself to that budget and to the six-second spacing NVD asks for (0.6 s with a key), shares the budget between workers through the cache, and waits out a window on NVD's 403 / 503 "too many connections". Parses `configurations` into real version ranges. |
+| `CveSearchSource` | **CPE** | — | CIRCL's Vulnerability-Lookup or a self-hosted cve-search. Reads versions from the CNA block, the CISA ADP block and the embedded legacy v4 record; a record with none stays undeterminable (see "Completing version ranges"). |
 | `GitHubAdvisorySource` | ecosystem + name (registry); **owner/repo** (repository advisories) | `token` for the registry feed | Repository advisories work **without** a token — they cover projects that are in no registry database. |
 | `EuvdSource` | ecosystem + name | — | ENISA EUVD. |
 | `SnykSource` | **purl** | `token` + `org_id` | Disabled unless both are configured. |
@@ -493,9 +525,38 @@ new NvdSource(new CpeResolver, options: [
 ]);
 ```
 
-Every source also understands `enabled`, `timeout`, `retry` and `base_url`
-(point CVE-Search or OSV at a self-hosted instance). Keys are read per request
-and never written anywhere by this package.
+Every source also understands `enabled`, `timeout`, `retry` and `base_url`.
+Keys are read per request and never written anywhere by this package.
+
+### Pointing a source at a mirror or self-hosted instance
+
+Each source's API base URL can be overridden — the endpoints and payloads stay
+the same, only the host changes. That is how you use a self-hosted
+[Vulnerability-Lookup](https://github.com/vulnerability-lookup/vulnerability-lookup)
+/ cve-search, an OSV mirror, an NVD proxy that holds your key, or a caching
+reverse proxy in front of any of them:
+
+| Env var (Laravel) | Source | Default |
+|---|---|---|
+| `VULNS_OSV_URL` | OSV | `https://api.osv.dev` (a legacy `/v1` suffix is tolerated) |
+| `VULNS_NVD_URL` | NVD | `https://services.nvd.nist.gov/rest/json` |
+| `VULNS_CVE_SEARCH_URL` | CVE-Search / Vulnerability-Lookup | `https://cve.circl.lu/api` — record links follow the instance (`…/cve/CVE-…`); `VULNS_CVE_SEARCH_VERIFY_TLS=false` for a private CA |
+| `VULNS_EUVD_URL` | EUVD | `https://euvdservices.enisa.europa.eu/api` |
+| `VULNS_SNYK_URL` | Snyk | `https://api.snyk.io` |
+| `VULNS_OSS_INDEX_URL` | OSS Index | `https://ossindex.sonatype.org/api/v3` |
+| `VULNS_REDHAT_URL` | Red Hat | `https://access.redhat.com/hydra/rest/securitydata` |
+| `VULNS_SHODAN_CVEDB_URL` | Shodan CVEDB | `https://cvedb.shodan.io` |
+| `VULNS_MITRE_URL` | MITRE CVE | `https://cveawg.mitre.org/api` |
+| `VULNS_VULNCHECK_URL` | VulnCheck | `https://api.vulncheck.com/v3` |
+| `VULNS_EPSS_URL` / `VULNS_KEV_URL` | EPSS / KEV enrichment | FIRST.org / CISA feeds |
+
+GitHub's GraphQL endpoint is not overridable (GitHub Enterprise has no
+advisory database API). In plain PHP pass `'base_url' => …` in the options
+array; trailing slashes don't matter.
+
+NVD's pacing is tunable for a mirror of your own: `VULNS_NVD_RATE_WINDOW`
+(seconds, 30), `VULNS_NVD_RATE_MAX` (requests per window; 5 or 50 by key
+presence) and `VULNS_NVD_MIN_INTERVAL` (seconds between requests; window / max).
 
 ## Laravel
 

@@ -111,6 +111,9 @@ class VulnsServiceProvider extends ServiceProvider
             config('vulns.complete_aliases.enabled', false)
                 ? ['sources' => (array) config('vulns.complete_aliases.sources', ['osv', 'github']), 'max' => (int) config('vulns.complete_aliases.max', 50)]
                 : null,
+            config('vulns.complete_ranges.enabled', true)
+                ? ['sources' => (array) config('vulns.complete_ranges.sources', ['github', 'nvd']), 'max' => (int) config('vulns.complete_ranges.max', 50)]
+                : null,
         ));
     }
 

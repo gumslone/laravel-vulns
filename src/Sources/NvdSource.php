@@ -11,6 +11,7 @@ use Gumslone\Vulns\Severity as SeverityLevel;
 use Gumslone\Vulns\Support\BuildsCpeRanges;
 use Gumslone\Vulns\Support\CpeResolver;
 use Gumslone\Vulns\Support\ResolvesLookupCpe;
+use Gumslone\Vulns\Support\RetryHandlerFactory;
 use Gumslone\Vulns\Support\VersionRange;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
@@ -34,12 +35,18 @@ class NvdSource extends AbstractSource
     {
         $this->boot($options, $logger, $cache);
         $this->apiKey = $this->config('api_key');
-        // The retrying handler backs off on 429/5xx (honouring Retry-After) so
-        // a slipped rate limit becomes a delay, not a silent empty result.
+        // NVD answers a blown rate limit with 403 (not 429) and no
+        // Retry-After, and under load with 503 "too many connections"; the
+        // retrying handler waits out a full window on those so a slipped
+        // limit becomes a delay, not a silent empty result.
+        $window = $this->rateWindow();
         $this->http = $http ?? $this->makeClient(
             rtrim((string) $this->config('base_url', 'https://services.nvd.nist.gov/rest/json'), '/').'/',
             array_filter(['apiKey' => $this->apiKey]),
             defaultRetry: 3,
+            handler: RetryHandlerFactory::stack(
+                (int) $this->config('retry', 3), $window * 1000, [403, 429], $window * 2000,
+            ),
         );
     }
 
@@ -275,27 +282,65 @@ class NvdSource extends AbstractSource
      * Naive fixed-window throttle honouring NVD rate limits
      * (5/30s anonymous, 50/30s with key). Uses the cache as shared state.
      */
+    private function rateWindow(): int
+    {
+        return max(1, (int) $this->config('rate_limit_window', 30));
+    }
+
+    /**
+     * Hold the request until it fits NVD's limit: at most `rate_limit_max`
+     * requests in any ROLLING `rate_limit_window` seconds (5/30 s anonymous,
+     * 50/30 s with a key), spaced `min_interval` seconds apart (the six
+     * seconds NVD asks for without a key, 0.6 s with one). A fixed calendar
+     * window — the old counter — let ten requests through in a few seconds
+     * across a boundary, which NVD answers with 403 / "too many connections".
+     *
+     * Request stamps live in the PSR-16 cache when one is bound, so every
+     * worker of the app shares one budget; without a cache the budget is
+     * per process. Read-modify-write is good enough for a best-effort pacer.
+     */
     private function throttle(): void
     {
-        $window = (int) $this->config('rate_limit_window', 30);
-        $max = (int) $this->config('rate_limit_max', $this->apiKey ? 50 : 5);
+        $window = $this->rateWindow();
+        $max = max(1, (int) ($this->config('rate_limit_max') ?: ($this->apiKey ? 50 : 5)));
+        $spacing = (float) $this->config('min_interval', $window / $max);
         // '.' separators, not ':' — PSR-16 reserves {}()/\@: and strict
         // implementations (e.g. Symfony's Psr16Cache) throw on them.
-        $key = 'vulns.nvd.rate.'.intdiv(time(), $window);
+        $key = 'vulns.nvd.rate';
+        // 'clock' and 'sleep' are test seams (like 'handler'): a pacer that
+        // really sleeps cannot be unit-tested in bounded time.
+        $clock = $this->config('clock') ?? static fn (): float => microtime(true);
+        $sleep = $this->config('sleep') ?? static fn (float $seconds) => usleep((int) ceil($seconds * 1_000_000));
 
-        // PSR-16 has no atomic increment; a read-modify-write is fine for a
-        // best-effort throttle. Falls back to a per-process counter uncached.
         static $local = [];
-        if ($this->cache !== null) {
-            $count = (int) $this->cache->get($key, 0) + 1;
-            $this->cache->set($key, $count, $window * 2);
-        } else {
-            $count = $local[$key] = ($local[$key] ?? 0) + 1;
-        }
+        for ($attempt = 0; $attempt < 100; $attempt++) {
+            $now = (float) $clock();
+            $stamps = $this->cache !== null ? (array) $this->cache->get($key, []) : $local;
+            $stamps = array_values(array_filter($stamps, fn ($t) => is_numeric($t) && (float) $t > $now - $window));
+            sort($stamps);
 
-        if ($count > $max) {
-            // Sleep until the current window rolls over
-            sleep($window - (time() % $window) + 1);
+            $wait = 0.0;
+            if (count($stamps) >= $max) {
+                $wait = max($wait, (float) $stamps[count($stamps) - $max] + $window - $now);
+            }
+            if ($stamps !== [] && $spacing > 0) {
+                $wait = max($wait, (float) end($stamps) + $spacing - $now);
+            }
+
+            if ($wait > 0) {
+                $sleep($wait);
+
+                continue; // re-read: another worker may have spent the budget meanwhile
+            }
+
+            $stamps[] = $now;
+            if ($this->cache !== null) {
+                $this->cache->set($key, $stamps, $window * 2);
+            } else {
+                $local = $stamps;
+            }
+
+            return;
         }
     }
 }

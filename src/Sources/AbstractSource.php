@@ -134,14 +134,18 @@ abstract class AbstractSource implements Source
      * JSON accept + user agent. $headers win over the defaults (e.g. Snyk's
      * vnd.api+json accept); $options adds client-level extras (verify, etc.).
      */
-    protected function makeClient(string $baseUri, array $headers = [], int $defaultRetry = 2, array $options = []): Client
+    /**
+     * @param  callable|null  $handler  a source-specific handler stack (its own
+     *                                  retry policy); null = the shared back-off
+     */
+    protected function makeClient(string $baseUri, array $headers = [], int $defaultRetry = 2, array $options = [], ?callable $handler = null): Client
     {
         return new Client($options + [
             'base_uri' => $baseUri,
             // The 'handler' config key is a test seam: injecting a whole
             // Client would bypass the source's own base_uri handling, which
             // is exactly what base-URL tests need to exercise.
-            'handler' => $this->config('handler') ?? RetryHandlerFactory::stack((int) $this->config('retry', $defaultRetry)),
+            'handler' => $this->config('handler') ?? $handler ?? RetryHandlerFactory::stack((int) $this->config('retry', $defaultRetry)),
             'timeout' => $this->config('timeout', 30),
             'headers' => $headers + [
                 'Accept' => 'application/json',
