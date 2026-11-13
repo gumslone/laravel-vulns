@@ -558,6 +558,13 @@ NVD's pacing is tunable for a mirror of your own: `VULNS_NVD_RATE_WINDOW`
 (seconds, 30), `VULNS_NVD_RATE_MAX` (requests per window; 5 or 50 by key
 presence) and `VULNS_NVD_MIN_INTERVAL` (seconds between requests; window / max).
 
+NVD fails in two ways and is retried accordingly. A 403 or 429 is a blown rate
+limit: the request waits out a full window before it is tried again. A 5xx —
+usually `503 No server is available` from NVD's front end — or a dropped
+connection is the service flapping and clears within seconds: it is retried
+after `VULNS_NVD_RETRY_DELAY` seconds (2, doubling: 2 s, 4 s, 8 s), never
+sooner than the request spacing (6 s, 12 s, 12 s without an API key).
+
 ## Laravel
 
 Auto-discovered. Publish the config to tune sources:

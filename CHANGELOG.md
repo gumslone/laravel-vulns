@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.22.1
+
+### Changed
+- **NVD: a 5xx is retried in seconds, not after a full rate-limit window.** 1.22.0 waited 30 s,
+  then 60 s, on every retryable NVD failure. That is right for a 403 / 429 — a blown rate
+  limit only time clears — but NVD's front end also answers `503 No server is available` in
+  bursts lasting a few seconds, to keyed and well-paced clients alike, and a batch then spent
+  about half its run asleep. A 5xx or a dropped connection is now retried after 2 s, 4 s, 8 s
+  (`retry_delay` / `VULNS_NVD_RETRY_DELAY`), never sooner than the request spacing (6 s, 12 s,
+  12 s without an API key, so a retry cannot itself break the limit); 403 / 429 still wait out
+  the window.
+- `RetryHandlerFactory::stack()` / `middleware()` take `throttleDelayMs` and
+  `throttleMaxDelayMs`: throttle statuses can be paced separately from 5xx and connection
+  errors. Both default to the existing delays, so other callers behave as before.
+
 ## 1.22.0
 
 ### Fixed

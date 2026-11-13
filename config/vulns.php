@@ -154,6 +154,10 @@ return [
         'rate_limit_window' => (int) env('VULNS_NVD_RATE_WINDOW', 30),
         'rate_limit_max' => env('VULNS_NVD_RATE_MAX'),
         'min_interval' => env('VULNS_NVD_MIN_INTERVAL'),
+        // First back-off, in seconds, after a 5xx or a dropped connection
+        // (doubling per retry; never shorter than min_interval). A 403 / 429
+        // — a blown rate limit — always waits out a full window instead.
+        'retry_delay' => env('VULNS_NVD_RETRY_DELAY'),
     ],
 
     'cve_search' => [

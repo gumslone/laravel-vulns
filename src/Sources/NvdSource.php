@@ -15,6 +15,7 @@ use Gumslone\Vulns\Support\RetryHandlerFactory;
 use Gumslone\Vulns\Support\VersionRange;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\HandlerStack;
 use Psr\Log\LoggerInterface;
 use Psr\SimpleCache\CacheInterface;
 
@@ -35,17 +36,15 @@ class NvdSource extends AbstractSource
     {
         $this->boot($options, $logger, $cache);
         $this->apiKey = $this->config('api_key');
-        // NVD answers a blown rate limit with 403 (not 429) and no
-        // Retry-After, and under load with 503 "too many connections"; the
-        // retrying handler waits out a full window on those so a slipped
-        // limit becomes a delay, not a silent empty result.
-        $window = $this->rateWindow();
         $this->http = $http ?? $this->makeClient(
             rtrim((string) $this->config('base_url', 'https://services.nvd.nist.gov/rest/json'), '/').'/',
             array_filter(['apiKey' => $this->apiKey]),
             defaultRetry: 3,
-            handler: RetryHandlerFactory::stack(
-                (int) $this->config('retry', 3), $window * 1000, [403, 429], $window * 2000,
+            handler: self::retryStack(
+                (int) $this->config('retry', 3),
+                $this->rateWindow(),
+                $this->spacing(),
+                $this->config('retry_delay') !== null ? (float) $this->config('retry_delay') : null,
             ),
         );
     }
@@ -279,12 +278,52 @@ class NvdSource extends AbstractSource
     }
 
     /**
-     * Naive fixed-window throttle honouring NVD rate limits
-     * (5/30s anonymous, 50/30s with key). Uses the cache as shared state.
+     * The retrying handler for NVD, which fails in two distinct ways:
+     *
+     * - 403 (not 429, and without Retry-After) is a blown rate limit. Only
+     *   time clears it, so the retry waits out a full window — a slipped
+     *   limit becomes a delay, not a silent empty result.
+     * - 5xx — typically "503 No server is available" from NVD's front end —
+     *   and dropped connections are the service flapping. That clears within
+     *   seconds, so the retry is quick: `$retryDelay` seconds, doubling. It
+     *   is never quicker than the pacer's `$spacing`, because a retry is a
+     *   request like any other and must not itself break the limit.
+     *
+     * Waiting a window on every 503 made a batch spend half its time asleep
+     * whenever NVD was unsteady.
+     *
+     * @param  float|null  $retryDelay  first 5xx back-off in seconds; null = 2 s
      */
+    public static function retryStack(int $retries, int $window, float $spacing, ?float $retryDelay = null): HandlerStack
+    {
+        $transient = (int) round(max($retryDelay ?? 2.0, $spacing) * 1000);
+
+        return RetryHandlerFactory::stack(
+            $retries,
+            $transient,
+            [403, 429],
+            max(10_000, $transient * 2),
+            throttleDelayMs: $window * 1000,
+            throttleMaxDelayMs: $window * 2000,
+        );
+    }
+
+    /** Length of NVD's rolling rate-limit window in seconds. */
     private function rateWindow(): int
     {
         return max(1, (int) $this->config('rate_limit_window', 30));
+    }
+
+    /** Requests NVD allows per window: 50 with an API key, 5 without. */
+    private function rateLimit(): int
+    {
+        return max(1, (int) ($this->config('rate_limit_max') ?: ($this->apiKey ? 50 : 5)));
+    }
+
+    /** Seconds between two requests: `min_interval`, else the window spread evenly over the limit. */
+    private function spacing(): float
+    {
+        return (float) $this->config('min_interval', $this->rateWindow() / $this->rateLimit());
     }
 
     /**
@@ -302,8 +341,8 @@ class NvdSource extends AbstractSource
     private function throttle(): void
     {
         $window = $this->rateWindow();
-        $max = max(1, (int) ($this->config('rate_limit_max') ?: ($this->apiKey ? 50 : 5)));
-        $spacing = (float) $this->config('min_interval', $window / $max);
+        $max = $this->rateLimit();
+        $spacing = $this->spacing();
         // '.' separators, not ':' — PSR-16 reserves {}()/\@: and strict
         // implementations (e.g. Symfony's Psr16Cache) throw on them.
         $key = 'vulns.nvd.rate';
