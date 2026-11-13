@@ -22,9 +22,12 @@ namespace Gumslone\Vulns\Support;
  *  - the product must BE the package: the same name, or "vendor/name";
  *  - when the package's vendor is known (composer vendor, npm scope, Maven
  *    group, repository owner), the advisory's vendor must be related to it;
- *  - when it is not known (an unscoped npm name), the vendor must be related
- *    to the package name itself — the self-named project ("axios" by "axios",
- *    "express" by "expressjs", "vite" by "vitejs");
+ *  - a vendor hint from elsewhere — the vendor of the package's curated CPE —
+ *    counts like the package's own vendor, and settles the cases a name alone
+ *    cannot: the Rust crate "openssl" (vendor "sfackler") is not OpenSSL;
+ *  - when no vendor is known at all (an unscoped npm name without a CPE), the
+ *    vendor must be related to the package name itself — the self-named
+ *    project ("axios" by "axios", "express" by "expressjs", "vite" by "vitejs");
  *  - a looser name match ("log4j" ~ "log4j-core") counts only together with
  *    a vendor match.
  *
@@ -50,10 +53,12 @@ final class ProductMatch
      * @param  string|null  $namespace  the package's vendor / scope / group, when known
      * @param  bool  $requireVendor  false accepts an exact product name even when the
      *                               vendor is unrelated (more findings, more false ones)
+     * @param  string[]  $vendorHints  further names the package's vendor goes by
+     *                                 (e.g. its CPE vendor); "_project" suffixes are ignored
      * @return bool|null true = concerns the package, false = about other products,
      *                   null = the advisory names no product
      */
-    public static function concerns(array $productNames, array $vendorNames, string $name, ?string $namespace = null, bool $requireVendor = true): ?bool
+    public static function concerns(array $productNames, array $vendorNames, string $name, ?string $namespace = null, bool $requireVendor = true, array $vendorHints = []): ?bool
     {
         [$embeddedVendor, $bareName] = self::split($name);
         $package = self::token($bareName);
@@ -61,6 +66,14 @@ final class ProductMatch
         if ($package === '') {
             return null;
         }
+
+        // Everything known about who makes the package. Only without any of
+        // it does the package name itself stand in (the self-named project).
+        $known = array_values(array_unique(array_filter([
+            $vendor,
+            ...array_map(fn ($hint) => self::token((string) preg_replace('/_project$/i', '', trim((string) $hint))), $vendorHints),
+        ])));
+        $references = $known !== [] ? $known : [$package];
 
         $vendors = array_values(array_filter(
             array_map(self::token(...), $vendorNames),
@@ -85,7 +98,13 @@ final class ProductMatch
                 continue;
             }
 
-            $affinity = self::vendorRelated($candidates, $vendor !== '' ? $vendor : $package);
+            $affinity = false;
+            foreach ($references as $reference) {
+                if (self::vendorRelated($candidates, $reference)) {
+                    $affinity = true;
+                    break;
+                }
+            }
 
             if ($exact && ($affinity || $candidates === [] || ! $requireVendor)) {
                 return true; // no vendor on the advisory: nothing to contradict the name

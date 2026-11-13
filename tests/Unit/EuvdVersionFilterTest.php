@@ -1,5 +1,6 @@
 <?php
 
+use Gumslone\Vulns\Contracts\CpeLookup;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Sources\EuvdSource;
 use GuzzleHttp\Client;
@@ -271,4 +272,24 @@ it('keeps a hit that names no product — it cannot be judged', function () {
     ]);
 
     expect($results[0])->toHaveCount(1);
+});
+
+it("uses the curated CPE's vendor to tell same-named products apart", function () {
+    // OpenSSL's CVEs must not land on the Rust crate that binds to it.
+    $hits = [euvdHit('EUVD-2031-40', 'OpenSSL', 'OpenSSL', '0 <1.1.1'), euvdHit('EUVD-2031-41', 'openssl', 'sfackler', '0 <0.10.90')];
+    $catalog = new class implements CpeLookup
+    {
+        public function bestCpe23(?string $purl, ?string $version): ?string
+        {
+            return $purl === 'pkg:cargo/openssl@0.10.81' ? 'cpe:2.3:a:sfackler:openssl:*:*:*:*:*:*:*:*' : null;
+        }
+    };
+    $crate = [new PackageData(name: 'openssl', version: '0.10.81', ecosystem: 'cargo', purl: 'pkg:cargo/openssl@0.10.81')];
+    $client = fn () => new Client(['handler' => HandlerStack::create(new MockHandler([euvdSearch($hits)]))]);
+
+    $with = (new EuvdSource($client(), [], null, null, $catalog))->queryBatch($crate)[0];
+    $without = (new EuvdSource($client()))->queryBatch($crate)[0];
+
+    expect(array_map(fn ($v) => $v->vulnId, $with))->toBe(['CVE-2031-41'])
+        ->and(array_map(fn ($v) => $v->vulnId, $without))->toBe(['CVE-2031-40']); // name alone: only the self-named vendor passes
 });

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Gumslone\Vulns\Sources;
 
+use Gumslone\Vulns\Contracts\CpeLookup;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
@@ -23,7 +24,13 @@ use Psr\SimpleCache\CacheInterface;
  */
 class EuvdSource extends AbstractSource
 {
-    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
+    /**
+     * @param  CpeLookup|null  $cpeLookup  a curated PURL → CPE mapping, when the host has one. Its
+     *                                     vendor tells same-named products apart — the Rust crate
+     *                                     "openssl" (CPE vendor "sfackler") from OpenSSL itself —
+     *                                     which EUVD's free-text records cannot.
+     */
+    public function __construct(?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null, private readonly ?CpeLookup $cpeLookup = null)
     {
         $this->boot($options, $logger, $cache);
         // The API lives on the euvdservices host; the euvd.enisa.europa.eu
@@ -54,10 +61,13 @@ class EuvdSource extends AbstractSource
         // search "core", but an advisory concerns at most one of them.
         $keysByProduct = [];
         $identities = [];
+        $vendorHints = [];
         foreach ($packages as $key => $package) {
             $lookup = strtolower(trim((string) $package->namespace)).'|'.$package->name;
             $keysByProduct[$lookup][] = $key;
             $identities[$lookup] = $package;
+            // Resolved once per identity: the lookup may be a database round-trip.
+            $vendorHints[$lookup] ??= $this->vendorHints($package);
         }
 
         // `size` tops out at 100; `page` (0-based) and the response's `total`
@@ -84,7 +94,7 @@ class EuvdSource extends AbstractSource
         $truncated = [];
         // The stored answer is already filtered to the package, so the key
         // carries the identity and the matching mode, not just the name.
-        $cachePrefix = 'euvd|'.$this->config('match', 'strict').'|';
+        $cachePrefix = 'euvd|'.$this->config('match', 'strict').'|'.($this->cpeLookup !== null ? 'cpe|' : '');
         foreach (array_keys($pending) as $lookup) {
             if (($cached = $this->cachedLookup($cachePrefix.$lookup)) !== null) {
                 $itemsByProduct[$lookup] = $cached;
@@ -104,7 +114,7 @@ class EuvdSource extends AbstractSource
 
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
-                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$seen, &$next, &$failed, &$firstReason, &$truncated, $pending, $keysByProduct, $identities, $pageSize, $maxPages) {
+                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$seen, &$next, &$failed, &$firstReason, &$truncated, $pending, $keysByProduct, $identities, $vendorHints, $pageSize, $maxPages) {
                     $data = json_decode($response->getBody()->getContents(), true);
 
                     // A 200 whose body isn't the expected JSON (the SPA's HTML
@@ -125,7 +135,7 @@ class EuvdSource extends AbstractSource
                     // other vendors' products, far too many to carry along.
                     $itemsByProduct[$product] = array_merge($itemsByProduct[$product], array_values(array_filter(
                         $items,
-                        fn ($item) => is_array($item) && $this->concerns($item, $identities[$product]),
+                        fn ($item) => is_array($item) && $this->concerns($item, $identities[$product], $vendorHints[$product]),
                     )));
 
                     $total = is_numeric($data['total'] ?? null) ? (int) $data['total'] : null;
@@ -217,7 +227,7 @@ class EuvdSource extends AbstractSource
      * cannot be judged and is kept (fail-safe); `match => 'name'` accepts an
      * exact product name from any vendor.
      */
-    private function concerns(array $item, PackageData $package): bool
+    private function concerns(array $item, PackageData $package, array $vendorHints = []): bool
     {
         $names = fn (string $list, string $field): array => array_values(array_filter(array_map(
             fn ($entry) => is_array($entry) ? trim((string) ($entry[$field]['name'] ?? '')) : '',
@@ -230,7 +240,24 @@ class EuvdSource extends AbstractSource
             $package->name,
             $package->namespace,
             requireVendor: $this->config('match', 'strict') !== 'name',
+            vendorHints: $vendorHints,
         ) !== false;
+    }
+
+    /**
+     * The vendor of the package's CPE — one the caller supplied, or the
+     * curated lookup's. A heuristic CPE is no use here: it would only repeat
+     * the package name.
+     *
+     * @return string[]
+     */
+    private function vendorHints(PackageData $package): array
+    {
+        $cpe = $package->cpe23 ?? $this->cpeLookup?->bestCpe23($package->purl, $package->version);
+        $parts = is_string($cpe) ? explode(':', $cpe) : [];
+        $vendor = ($parts[0] ?? '') === 'cpe' && ($parts[1] ?? '') === '2.3' ? trim((string) ($parts[3] ?? '')) : '';
+
+        return $vendor !== '' && $vendor !== '*' && $vendor !== '-' ? [$vendor] : [];
     }
 
     /** The by-id endpoint is keyed on EUVD's own ids. */

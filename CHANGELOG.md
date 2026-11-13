@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.22.4
+
+### Fixed
+- **EUVD: same-named products of different vendors.** 1.22.3 accepts an unscoped package when
+  the advisory's vendor is related to the package *name* — right for `axios` by `axios`, wrong
+  for the Rust crate `openssl`, which collected OpenSSL's own 34 CVEs. `EuvdSource` now takes
+  the optional `CpeLookup` the NVD and CVE-Search sources already use (5th constructor
+  argument) and treats the vendor of the package's curated CPE — or of a `cpe23` supplied on
+  the package — as its vendor: `openssl` (CPE vendor `sfackler`) no longer matches OpenSSL,
+  while `express` (`expressjs`), `lodash`, `vite` and `axios` are unchanged. NVD's synthetic
+  `<name>_project` vendors are read as the name. Without a lookup nothing changes.
+  `ProductMatch::concerns()` gains `vendorHints`.
+
 ## 1.22.3
 
 ### Fixed

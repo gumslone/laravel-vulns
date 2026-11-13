@@ -58,3 +58,15 @@ it('accepts an exact name from any vendor when vendors are not required', functi
         // …but still not a mere "contains" match.
         ->and(ProductMatch::concerns(['Cisco Unified Contact Center Express'], ['Cisco'], 'express', null, requireVendor: false))->toBeFalse();
 });
+
+it('lets a vendor hint settle what a name alone cannot', function () {
+    // The Rust crate "openssl" is maintained by sfackler; OpenSSL's own CVEs are not its.
+    expect(ProductMatch::concerns(['OpenSSL'], ['OpenSSL'], 'openssl', null))->toBeTrue() // no hint: self-named, accepted
+        ->and(ProductMatch::concerns(['OpenSSL'], ['OpenSSL'], 'openssl', null, vendorHints: ['sfackler']))->toBeFalse()
+        ->and(ProductMatch::concerns(['openssl'], ['sfackler'], 'openssl', null, vendorHints: ['sfackler']))->toBeTrue()
+        // A hint widens as well: either the namespace or the CPE vendor may match.
+        ->and(ProductMatch::concerns(['guzzle'], ['guzzlephp'], 'guzzle', 'acme', vendorHints: ['guzzlephp']))->toBeTrue()
+        // NVD's synthetic "<name>_project" vendors say no more than the name does.
+        ->and(ProductMatch::concerns(['qs'], ['qs'], 'qs', null, vendorHints: ['qs_project']))->toBeTrue()
+        ->and(ProductMatch::concerns(['express'], ['Ubiquiti Inc'], 'express', null, vendorHints: ['expressjs']))->toBeFalse();
+});
