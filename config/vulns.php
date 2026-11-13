@@ -185,6 +185,12 @@ return [
         'max_pages' => (int) env('VULNS_EUVD_MAX_PAGES', 20), // × 100 records
         'result_cache_ttl' => (int) env('VULNS_EUVD_RESULT_CACHE_TTL', 3600),
         'max_concurrency' => (int) env('VULNS_EUVD_CONCURRENCY', 8),
+        // EUVD's search matches every product whose name CONTAINS the term.
+        // 'strict' keeps a hit only when its product is the package AND its
+        // vendor is related to the package's (or, without one, to its name);
+        // 'name' accepts the exact product name from any vendor — more
+        // findings, and other vendors' same-named products among them.
+        'match' => env('VULNS_EUVD_MATCH', 'strict'),
     ],
 
     'snyk' => [

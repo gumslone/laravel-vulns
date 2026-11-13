@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.22.3
+
+### Fixed
+- **EUVD: advisories about other products were reported against the package.** EUVD's search
+  answers every product whose name *contains* the term, and the source kept a hit whenever
+  none of its products matched the package ("nothing to judge by"), never looking at the
+  vendor. A generic name collected hundreds of unrelated advisories: a live fetch put Jenkins,
+  Intel and Microsoft configuration tools on `league/config` (185), .NET on `laravel/framework`
+  (167) and 685 records on the npm package `he` — 5,700 false findings across 98 packages.
+  Each hit is now checked with the new `Support\ProductMatch`: the product must be the package
+  (same name, or `vendor/name`), and the vendor must be related to the package's vendor / scope
+  / group — or, for a package without one, to its own name. A looser name match (`log4j` ~
+  `log4j-core`) counts only with a vendor match; a record naming no product is still kept.
+  Against live EUVD: `league/config`, `he`, `ms`, `symfony/process` → 0; `laravel/framework`
+  → 6, `express` → 6 (their own CVEs). `match` / `VULNS_EUVD_MATCH=name` restores name-only
+  matching for exact names.
+- **EUVD memory.** Hits are filtered page by page instead of being collected first — one
+  lookup for `core` peaked at 99 MB (and killed 128 MB queue workers); it now stays under
+  15 MB. Lookups are grouped, and cached, per package identity rather than per bare name, so
+  `@vueuse/core` and `@inertiajs/core` no longer share one answer.
+
+### Changed
+- EUVD is searched by the package's bare name (`laravel/framework` → `framework`); the vendor
+  is matched from EUVD's own vendor field.
+
 ## 1.22.2
 
 ### Fixed

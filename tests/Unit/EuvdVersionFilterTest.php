@@ -5,6 +5,7 @@ use Gumslone\Vulns\Sources\EuvdSource;
 use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 
 function euvdSource(array $responses): EuvdSource
@@ -167,4 +168,107 @@ it('treats an advisory with unnamed product entries as ambiguous for patch claim
 
     expect($vuln->fixedVersions)->toBe([])
         ->and($vuln->isFixed)->toBeFalse();
+});
+
+/*
+ * EUVD's search is a "contains" match on the product name. Before the product
+ * and vendor were checked, every hit landed on the package: a live fetch put
+ * Jenkins and Intel configuration tools on league/config and 685 records on
+ * the npm package "he".
+ */
+
+/** One search hit with a product name, a vendor and a version text. */
+function euvdHit(string $id, string $product, ?string $vendor, string $productVersion = '0 <99.0.0'): array
+{
+    return [
+        'id' => $id,
+        'description' => "A bug in {$product}.",
+        'aliases' => str_replace('EUVD', 'CVE', $id),
+        'baseScore' => 7.5,
+        'enisaIdProduct' => [['product' => ['name' => $product], 'product_version' => $productVersion]],
+        'enisaIdVendor' => $vendor === null ? [] : [['vendor' => ['name' => $vendor]]],
+    ];
+}
+
+it('keeps only the hits that are about the package, not everything whose name contains the term', function () {
+    $source = euvdSource([euvdSearch([
+        euvdHit('EUVD-2031-1', 'Microsoft Configuration Manager 2603', 'Microsoft'),
+        euvdHit('EUVD-2031-2', 'AWS Global Configuration Plugin', 'Jenkins'),
+        euvdHit('EUVD-2031-3', 'Config::IniFiles', 'SHLOMIF'),
+        euvdHit('EUVD-2031-4', 'config', 'node-config'),      // same name, another vendor's package
+        euvdHit('EUVD-2031-5', 'config', 'The PHP League'),   // ours
+    ])]);
+
+    $results = $source->queryBatch([
+        new PackageData(name: 'config', version: '1.2.0', ecosystem: 'composer', namespace: 'league'),
+    ]);
+
+    expect(array_map(fn ($v) => $v->vulnId, $results[0]))->toBe(['CVE-2031-5']);
+});
+
+it('looks packages that share a bare name up separately and gives each only its own advisories', function () {
+    $hits = [
+        euvdHit('EUVD-2031-10', 'core', 'vueuse'),
+        euvdHit('EUVD-2031-11', 'core', 'inertiajs'),
+        euvdHit('EUVD-2031-12', 'Drupal core', 'Drupal'),
+    ];
+    $history = [];
+    $stack = HandlerStack::create(new MockHandler([euvdSearch($hits), euvdSearch($hits)]));
+    $stack->push(Middleware::history($history));
+    $source = new EuvdSource(new Client(['handler' => $stack]));
+
+    $results = $source->queryBatch([
+        'vueuse' => new PackageData(name: 'core', version: '11.3.0', ecosystem: 'npm', namespace: '@vueuse'),
+        'inertia' => new PackageData(name: 'core', version: '2.3.27', ecosystem: 'npm', namespace: '@inertiajs'),
+        'vueuse-old' => new PackageData(name: 'core', version: '10.0.0', ecosystem: 'npm', namespace: '@vueuse'),
+    ]);
+
+    expect($history)->toHaveCount(2) // one search per identity; the two @vueuse versions share theirs
+        ->and(array_map(fn ($v) => $v->vulnId, $results['vueuse']))->toBe(['CVE-2031-10'])
+        ->and(array_map(fn ($v) => $v->vulnId, $results['vueuse-old']))->toBe(['CVE-2031-10'])
+        ->and(array_map(fn ($v) => $v->vulnId, $results['inertia']))->toBe(['CVE-2031-11']);
+});
+
+it('searches by the bare name and pages by records read, not by records kept', function () {
+    // 150 records in all; the first page holds nothing about the package.
+    $page = fn (array $items) => new Response(200, [], json_encode(['items' => $items, 'total' => 150]));
+    $noise = array_map(fn (int $i) => euvdHit("EUVD-2031-{$i}", "Framework Tool {$i}", 'Someone'), range(100, 199));
+    $rest = array_map(fn (int $i) => euvdHit("EUVD-2031-{$i}", "Framework Tool {$i}", 'Someone'), range(200, 248));
+    $rest[] = euvdHit('EUVD-2031-999', 'framework', 'Laravel');
+
+    $history = [];
+    $stack = HandlerStack::create(new MockHandler([$page($noise), $page($rest)]));
+    $stack->push(Middleware::history($history));
+    $source = new EuvdSource(new Client(['handler' => $stack]));
+
+    $results = $source->queryBatch([
+        new PackageData(name: 'laravel/framework', version: '11.55.0', ecosystem: 'composer'),
+    ]);
+
+    parse_str($history[0]['request']->getUri()->getQuery(), $first);
+    parse_str($history[1]['request']->getUri()->getQuery(), $second);
+    expect($history)->toHaveCount(2)
+        ->and($first['product'])->toBe('framework')
+        ->and($second['page'])->toBe('1')
+        ->and(array_map(fn ($v) => $v->vulnId, $results[0]))->toBe(['CVE-2031-999']);
+});
+
+it('rejects an exact name from an unrelated vendor unless told to match by name alone', function () {
+    $hits = [euvdHit('EUVD-2031-20', 'express', 'Ubiquiti Inc'), euvdHit('EUVD-2031-21', 'express', 'expressjs')];
+    $package = [new PackageData(name: 'express', version: '4.18.2', ecosystem: 'npm')];
+    $client = fn () => new Client(['handler' => HandlerStack::create(new MockHandler([euvdSearch($hits)]))]);
+
+    expect(array_map(fn ($v) => $v->vulnId, (new EuvdSource($client()))->queryBatch($package)[0]))->toBe(['CVE-2031-21'])
+        ->and(array_map(fn ($v) => $v->vulnId, (new EuvdSource($client(), ['match' => 'name']))->queryBatch($package)[0]))
+        ->toBe(['CVE-2031-20', 'CVE-2031-21']);
+});
+
+it('keeps a hit that names no product — it cannot be judged', function () {
+    $item = ['id' => 'EUVD-2031-30', 'description' => 'Old backfilled record.', 'aliases' => 'CVE-2031-30', 'enisaIdProduct' => []];
+
+    $results = euvdSource([euvdSearch([$item])])->queryBatch([
+        new PackageData(name: 'config', version: '1.2.0', ecosystem: 'composer', namespace: 'league'),
+    ]);
+
+    expect($results[0])->toHaveCount(1);
 });

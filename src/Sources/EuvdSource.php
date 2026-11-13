@@ -7,6 +7,7 @@ namespace Gumslone\Vulns\Sources;
 use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
+use Gumslone\Vulns\Support\ProductMatch;
 use Gumslone\Vulns\Support\VersionRange;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
@@ -47,12 +48,16 @@ class EuvdSource extends AbstractSource
     {
         $results = array_fill_keys(array_keys($packages), []);
 
-        // Lookup is a product-name search (no version), so packages sharing
-        // a name — e.g. the same dependency at different versions — share
-        // one request.
+        // Lookup is a product-name search (no version), so the same package
+        // at different versions shares one request. Packages are grouped by
+        // IDENTITY, not bare name: "@vueuse/core" and "@inertiajs/core" both
+        // search "core", but an advisory concerns at most one of them.
         $keysByProduct = [];
+        $identities = [];
         foreach ($packages as $key => $package) {
-            $keysByProduct[$package->name][] = $key;
+            $lookup = strtolower(trim((string) $package->namespace)).'|'.$package->name;
+            $keysByProduct[$lookup][] = $key;
+            $identities[$lookup] = $package;
         }
 
         // `size` tops out at 100; `page` (0-based) and the response's `total`
@@ -68,13 +73,20 @@ class EuvdSource extends AbstractSource
         $requested = 0;
         $firstReason = null;
         $itemsByProduct = array_fill_keys(array_keys($keysByProduct), []);
+        // Records read per lookup — paging runs on this, not on what was
+        // kept: the search is a "contains" match on the product name, and
+        // only the records that concern the package are held on to.
+        $seen = array_fill_keys(array_keys($keysByProduct), 0);
 
         $pending = array_fill_keys(array_keys($keysByProduct), 0);
         // Product-level lookups answered recently come from the cache (see
         // AbstractSource::cachedLookup) — only complete answers are stored.
         $truncated = [];
+        // The stored answer is already filtered to the package, so the key
+        // carries the identity and the matching mode, not just the name.
+        $cachePrefix = 'euvd|'.$this->config('match', 'strict').'|';
         foreach (array_keys($pending) as $lookup) {
-            if (($cached = $this->cachedLookup('euvd|'.$lookup)) !== null) {
+            if (($cached = $this->cachedLookup($cachePrefix.$lookup)) !== null) {
                 $itemsByProduct[$lookup] = $cached;
                 unset($pending[$lookup]);
             }
@@ -82,17 +94,17 @@ class EuvdSource extends AbstractSource
         $fetched = array_keys($pending);
         while ($pending !== []) {
             $next = [];
-            $requests = function () use ($pending, $pageSize) {
+            $requests = function () use ($pending, $pageSize, $identities) {
                 foreach ($pending as $product => $page) {
                     yield $product => fn () => $this->http->getAsync('search', [
-                        'query' => ['product' => (string) $product, 'size' => $pageSize] + ($page > 0 ? ['page' => $page] : []),
+                        'query' => ['product' => self::searchTerm($identities[$product]), 'size' => $pageSize] + ($page > 0 ? ['page' => $page] : []),
                     ]);
                 }
             };
 
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
-                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$next, &$failed, &$firstReason, &$truncated, $pending, $keysByProduct, $pageSize, $maxPages) {
+                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$seen, &$next, &$failed, &$firstReason, &$truncated, $pending, $keysByProduct, $identities, $pageSize, $maxPages) {
                     $data = json_decode($response->getBody()->getContents(), true);
 
                     // A 200 whose body isn't the expected JSON (the SPA's HTML
@@ -107,17 +119,24 @@ class EuvdSource extends AbstractSource
                     }
 
                     $items = $data['items'];
-                    $itemsByProduct[$product] = array_merge($itemsByProduct[$product], $items);
+                    $seen[$product] += count($items);
+                    // Keep only what concerns THIS package, page by page: a
+                    // generic name ("core", "config") returns thousands of
+                    // other vendors' products, far too many to carry along.
+                    $itemsByProduct[$product] = array_merge($itemsByProduct[$product], array_values(array_filter(
+                        $items,
+                        fn ($item) => is_array($item) && $this->concerns($item, $identities[$product]),
+                    )));
 
                     $total = is_numeric($data['total'] ?? null) ? (int) $data['total'] : null;
-                    $more = $total !== null ? count($itemsByProduct[$product]) < $total : count($items) >= $pageSize;
+                    $more = $total !== null ? $seen[$product] < $total : count($items) >= $pageSize;
                     if ($items === [] || ! $more) {
                         return;
                     }
                     if ($maxPages <= $pending[$product] + 1) {
                         $truncated[$product] = true;
                         $this->warn(
-                            sprintf('results for "%s" truncated at %d of %s records (max_pages=%d)', $product, count($itemsByProduct[$product]), $total ?? 'unknown', $maxPages),
+                            sprintf('results for "%s" truncated at %d of %s records (max_pages=%d)', self::searchTerm($identities[$product]), $seen[$product], $total ?? 'unknown', $maxPages),
                             [], $keysByProduct[$product],
                         );
 
@@ -149,7 +168,7 @@ class EuvdSource extends AbstractSource
 
         foreach ($fetched as $lookup) {
             if (! isset($truncated[$lookup])) {
-                $this->cacheLookup('euvd|'.$lookup, $itemsByProduct[$lookup]);
+                $this->cacheLookup($cachePrefix.$lookup, $itemsByProduct[$lookup]);
             }
         }
 
@@ -162,20 +181,56 @@ class EuvdSource extends AbstractSource
                 }
             }
 
-            // The search matched by product NAME only; drop advisories the
-            // queried version provably escapes. Fail-safe: an advisory is
+            // What is left concerns the package (see concerns()); now drop
+            // the advisories the queried version provably escapes. Fail-safe: an advisory is
             // only dropped when its ranges for THIS product parsed cleanly
             // and none matched — unparseable or missing version text keeps
             // the advisory ("can't tell" must not read as "not affected").
             foreach ($keysByProduct[$product] as $key) {
                 $results[$key] = array_values(array_filter(
                     $vulns,
-                    fn (VulnerabilityData $vuln) => $this->versionMayBeAffected($vuln, (string) $product, $packages[$key]->version),
+                    fn (VulnerabilityData $vuln) => $this->versionMayBeAffected($vuln, self::searchTerm($identities[$product]), $packages[$key]->version),
                 ));
             }
         }
 
         return $results;
+    }
+
+    /**
+     * The product name to search EUVD for: the package's own name without a
+     * vendor prefix ("laravel/framework" → "framework") — EUVD keeps the
+     * vendor in a field of its own, which concerns() checks.
+     */
+    private static function searchTerm(PackageData $package): string
+    {
+        $name = trim($package->name);
+        $at = max((int) strrpos($name, '/'), (int) strrpos($name, ':'));
+
+        return $at > 0 ? substr($name, $at + 1) : $name;
+    }
+
+    /**
+     * Whether a search hit is about the package at all. The search answers
+     * every product whose name CONTAINS the term, so most hits for a generic
+     * name are other vendors' products. A record that names no product
+     * cannot be judged and is kept (fail-safe); `match => 'name'` accepts an
+     * exact product name from any vendor.
+     */
+    private function concerns(array $item, PackageData $package): bool
+    {
+        $names = fn (string $list, string $field): array => array_values(array_filter(array_map(
+            fn ($entry) => is_array($entry) ? trim((string) ($entry[$field]['name'] ?? '')) : '',
+            is_array($item[$list] ?? null) ? $item[$list] : [],
+        )));
+
+        return ProductMatch::concerns(
+            $names('enisaIdProduct', 'product'),
+            $names('enisaIdVendor', 'vendor'),
+            $package->name,
+            $package->namespace,
+            requireVendor: $this->config('match', 'strict') !== 'name',
+        ) !== false;
     }
 
     /** The by-id endpoint is keyed on EUVD's own ids. */
