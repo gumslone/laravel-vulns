@@ -155,9 +155,12 @@ return [
         'rate_limit_max' => env('VULNS_NVD_RATE_MAX'),
         'min_interval' => env('VULNS_NVD_MIN_INTERVAL'),
         // First back-off, in seconds, after a 5xx or a dropped connection
-        // (doubling per retry; never shorter than min_interval). A 403 / 429
-        // — a blown rate limit — always waits out a full window instead.
+        // (doubling per retry up to a window's length; never shorter than
+        // min_interval). A 403 / 429 — a blown rate limit — always waits out
+        // a full window instead. `retry` is the number of retries per
+        // request: 8 by default, 150 s of patience for a flapping NVD.
         'retry_delay' => env('VULNS_NVD_RETRY_DELAY'),
+        'retry' => (int) env('VULNS_NVD_RETRY', 8),
     ],
 
     'cve_search' => [

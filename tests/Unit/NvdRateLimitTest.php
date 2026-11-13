@@ -170,7 +170,16 @@ it('paces each failure by its own kind when they alternate', function () {
 
 it('never retries sooner than the request spacing — a retry is a request too', function () {
     // Keyless NVD: six seconds between requests.
-    expect(nvdBackoffs([503, 503, 503, 200], spacing: 6.0))->toBe([6000, 12000, 12000]);
+    expect(nvdBackoffs([503, 503, 503, 200], spacing: 6.0))->toBe([6000, 12000, 24000]);
+});
+
+it('stays patient through a long 503 burst: quick first, then a window at a time', function () {
+    // 1.22.1 stopped after 2 + 4 + 8 = 14 s and lost NVD for the whole batch
+    // while bursts of a minute and more were going on.
+    $backoffs = nvdBackoffs([503, 503, 503, 503, 503, 503, 503, 503, 200], retries: NvdSource::DEFAULT_RETRIES);
+
+    expect($backoffs)->toBe([2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000])
+        ->and(array_sum($backoffs))->toBe(150_000); // what 1.22.0's 30 + 60 + 60 rode out
 });
 
 it('honours a configured retry delay', function () {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.22.2
+
+### Fixed
+- **NVD: 1.22.1 gave up too early.** Its three quick retries (2 s, 4 s, 8 s) are over after
+  14 s, but NVD's `503 No server is available` bursts also last a minute and more. The lookup
+  then failed, and a failed lookup costs the caller NVD's answer for the whole batch — in a
+  live fetch every batch that met such a burst lost NVD for all its packages, which 1.22.0's
+  slow 30 s / 60 s waits had ridden out. The 5xx back-off now starts as quick and doubles up
+  to a window's length, with eight retries by default (`retry` / `VULNS_NVD_RETRY`): 2, 4, 8,
+  16, 30, 30, 30, 30 s — the same 150 s of patience as 1.22.0, but a short burst is over in
+  seconds. 403 / 429 are unchanged (a full window each).
+
 ## 1.22.1
 
 ### Changed

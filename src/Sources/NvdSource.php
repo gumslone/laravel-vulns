@@ -27,6 +27,12 @@ use Psr\SimpleCache\CacheInterface;
  */
 class NvdSource extends AbstractSource
 {
+    /**
+     * Retries per request when `retry` is not configured: 2 + 4 + 8 + 16 +
+     * 30 × 4 = 150 s of patience for a flapping service.
+     */
+    public const DEFAULT_RETRIES = 8;
+
     use BuildsCpeRanges;
     use ResolvesLookupCpe;
 
@@ -41,7 +47,7 @@ class NvdSource extends AbstractSource
             array_filter(['apiKey' => $this->apiKey]),
             defaultRetry: 3,
             handler: self::retryStack(
-                (int) $this->config('retry', 3),
+                (int) $this->config('retry', self::DEFAULT_RETRIES),
                 $this->rateWindow(),
                 $this->spacing(),
                 $this->config('retry_delay') !== null ? (float) $this->config('retry_delay') : null,
@@ -284,13 +290,20 @@ class NvdSource extends AbstractSource
      *   time clears it, so the retry waits out a full window — a slipped
      *   limit becomes a delay, not a silent empty result.
      * - 5xx — typically "503 No server is available" from NVD's front end —
-     *   and dropped connections are the service flapping. That clears within
-     *   seconds, so the retry is quick: `$retryDelay` seconds, doubling. It
-     *   is never quicker than the pacer's `$spacing`, because a retry is a
+     *   and dropped connections are the service flapping. Most bursts clear
+     *   within seconds, so the first retry is quick: `$retryDelay` seconds,
+     *   doubling up to a window's length (2, 4, 8, 16, 30, 30 … s). It is
+     *   never quicker than the pacer's `$spacing`, because a retry is a
      *   request like any other and must not itself break the limit.
      *
-     * Waiting a window on every 503 made a batch spend half its time asleep
-     * whenever NVD was unsteady.
+     * Both extremes have been tried and failed. Waiting a full window on
+     * every 503 (1.22.0) made a batch spend half its run asleep. Three quick
+     * retries (1.22.1; 14 s in all) gave up while NVD was still mid-burst —
+     * bursts of a minute and more occur — and a failed lookup costs the
+     * caller NVD's answer for the whole batch. Hence quick first, patient
+     * overall: with the default eight retries the lookup rides out two and a
+     * half minutes of trouble, as 1.22.0 did, but recovers from a short burst
+     * in seconds.
      *
      * @param  float|null  $retryDelay  first 5xx back-off in seconds; null = 2 s
      */
@@ -302,7 +315,7 @@ class NvdSource extends AbstractSource
             $retries,
             $transient,
             [403, 429],
-            max(10_000, $transient * 2),
+            max($window * 1000, $transient),
             throttleDelayMs: $window * 1000,
             throttleMaxDelayMs: $window * 2000,
         );

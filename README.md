@@ -561,9 +561,12 @@ presence) and `VULNS_NVD_MIN_INTERVAL` (seconds between requests; window / max).
 NVD fails in two ways and is retried accordingly. A 403 or 429 is a blown rate
 limit: the request waits out a full window before it is tried again. A 5xx —
 usually `503 No server is available` from NVD's front end — or a dropped
-connection is the service flapping and clears within seconds: it is retried
-after `VULNS_NVD_RETRY_DELAY` seconds (2, doubling: 2 s, 4 s, 8 s), never
-sooner than the request spacing (6 s, 12 s, 12 s without an API key).
+connection is the service flapping: it is retried after `VULNS_NVD_RETRY_DELAY`
+seconds (2), doubling up to a window's length — 2, 4, 8, 16, 30, 30, 30, 30 s
+with the default `VULNS_NVD_RETRY` of 8 — and never sooner than the request
+spacing (6, 12, 24, 30 … s without an API key). Short bursts are over in
+seconds; a lookup still rides out two and a half minutes of trouble before it
+fails, because a failed lookup costs the caller NVD's answer for that batch.
 
 ## Laravel
 
