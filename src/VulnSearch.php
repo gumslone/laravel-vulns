@@ -29,11 +29,14 @@ class VulnSearch
      */
     public const DEFAULT_PRIORITY = [
         'osv', 'github', 'nvd', 'mitre', 'redhat', 'oss_index',
-        'vulncheck', 'snyk', 'euvd', 'shodan_cvedb', 'cve_search',
+        'vulncheck', 'snyk', 'euvd', 'shodan_cvedb', 'vulnerability_lookup', 'cve_search',
     ];
 
     /** @var array<string, string> source name => error message from the last search */
     private array $errors = [];
+
+    /** @var array<string, true> sources that failed outright in the last search (a warning does not count) */
+    private array $down = [];
 
     /** @var array<array-key, array{queried: string[], skipped: string[], failed: string[]}> per package key */
     private array $coverage = [];
@@ -366,7 +369,12 @@ class VulnSearch
             $this->errors[$errorKey] = sprintf('%d of %d %s left without %s (max %d per search)', $all - count($ids), $all, $noun, $what, count($ids));
         }
 
-        $sources = array_filter($this->all(), fn (Source $s) => $s->isEnabled() && in_array($s->name(), $setting['sources'], true));
+        // A source that has just failed outright is not asked again: with
+        // patient retries behind it, a second round against a feed that is
+        // down could hold the search for minutes more to no end.
+        $sources = array_filter($this->all(), fn (Source $s) => $s->isEnabled()
+            && in_array($s->name(), $setting['sources'], true)
+            && ! isset($this->down[$s->name()]));
         $found = [];
         foreach ($sources as $source) {
             foreach ($ids as $id) {
@@ -381,6 +389,7 @@ class VulnSearch
                     $this->errors[$source->name()] = ($this->errors[$source->name()] ?? '') === ''
                         ? "{$what}: {$e->getMessage()}"
                         : $this->errors[$source->name()];
+                    $this->down[$source->name()] = true;
                     break; // a failing feed is not asked again this search
                 }
             }
@@ -538,6 +547,7 @@ class VulnSearch
     {
         $results = array_fill_keys(array_keys($packages), []);
         $this->errors = [];
+        $this->down = [];
         $this->coverage = array_fill_keys(array_keys($packages), ['queried' => [], 'skipped' => [], 'failed' => []]);
 
         foreach ($this->sources as $source) {
@@ -586,6 +596,7 @@ class VulnSearch
                 }
             } catch (\Throwable $e) {
                 $this->errors[$source->name()] = $e->getMessage();
+                $this->down[$source->name()] = true;
                 $this->emit(new Events\SourceFailed($source->name(), $e->getMessage()));
                 // Everything not already recorded as skipped failed — the
                 // throw may have come from supports() part-way through.
@@ -672,6 +683,7 @@ class VulnSearch
         // errors() reports the most recent operation only — without the reset
         // a stale failure from an earlier search would taint this lookup.
         $this->errors = [];
+        $this->down = [];
         $this->coverage = [$vulnId => ['queried' => [], 'skipped' => [], 'failed' => []]];
         $found = [];
 

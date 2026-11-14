@@ -127,6 +127,12 @@ final class VersionRange
     }
 
     /**
+     * The version may itself be a constraint — "^1.6.0" from a manifest
+     * without a lock file, "1.x" typed into a search (see VersionSet). Then
+     * the question is whether ANY version it allows is affected: true as soon
+     * as it overlaps an affected range, false only when every range is
+     * readable and none of them shares a version with it.
+     *
      * @param  array<int, array<string, mixed>|string>  $ranges  affectedRanges entries
      * @return bool|null true = in an affected range; false = provably outside EVERY range; null = undeterminable (any range unreadable and none matched)
      */
@@ -137,6 +143,10 @@ final class VersionRange
         }
 
         $version = self::normalise($version);
+        if (! Version::isOrderable($version) && ($installed = VersionSet::parse($version)) !== null) {
+            return self::overlapsAny($installed, $ranges);
+        }
+
         $sawParseable = false;
         $sawUndeterminable = false;
 
@@ -169,6 +179,13 @@ final class VersionRange
 
             $result = self::satisfies($version, $constraint);
             if ($result === null) {
+                // Not the plain comparator grammar — but perhaps one of the
+                // others ranges are written in: "5.5.*", "^5.5", "~5.5.0",
+                // "5.5.0 - 5.5.20", "5.4.x || 5.5.x", "[5.5,5.6)".
+                $set = VersionSet::parse($constraint, allowBare: false);
+                $result = $set !== null ? VersionSet::contains($set, $version) : null;
+            }
+            if ($result === null) {
                 $sawUndeterminable = true;
 
                 continue;
@@ -181,6 +198,41 @@ final class VersionRange
         }
 
         // "Not affected" only when EVERY range was readable and none matched.
+        return $sawParseable && ! $sawUndeterminable ? false : null;
+    }
+
+    /**
+     * isVulnerable() for an installed version that is a set of versions:
+     * does it share a version with any affected range?
+     *
+     * @param  array<int, array{0: string|null, 1: bool, 2: string|null, 3: bool}>  $installed
+     * @param  array<int, array<string, mixed>|string>  $ranges
+     */
+    private static function overlapsAny(array $installed, array $ranges): ?bool
+    {
+        $sawParseable = false;
+        $sawUndeterminable = false;
+
+        foreach ($ranges as $range) {
+            if (is_array($range) && ! isset($range['range']) && is_array($range['events'] ?? null)) {
+                if (strtoupper((string) ($range['type'] ?? '')) === 'GIT') {
+                    continue;
+                }
+                $affected = VersionSet::fromEvents($range['events']);
+            } else {
+                $constraint = is_array($range)
+                    ? (is_string($range['range'] ?? null) ? $range['range'] : null)
+                    : (is_string($range) ? $range : null);
+                $affected = $constraint === null || trim($constraint) === '' ? null : VersionSet::parse($constraint);
+            }
+
+            $result = $affected === null ? null : VersionSet::overlaps($installed, $affected);
+            if ($result === true) {
+                return true;
+            }
+            $result === null ? $sawUndeterminable = true : $sawParseable = true;
+        }
+
         return $sawParseable && ! $sawUndeterminable ? false : null;
     }
 
@@ -312,7 +364,14 @@ final class VersionRange
             return false;
         }
         if (! Version::isOrderable($version)) {
-            return false;
+            // A constraint is past the fixes when its lowest allowed version
+            // is: every version it admits lies at or above that.
+            $set = VersionSet::parse(self::normalise($version));
+            $lowest = $set !== null ? VersionSet::lowest($set) : null;
+            if ($lowest === null) {
+                return false;
+            }
+            $version = $lowest;
         }
 
         $fixes = [];

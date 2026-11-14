@@ -43,8 +43,11 @@ final class ProductMatch
         'github', 'gitlab', 'bitbucket', 'www', 'php', 'js', 'node', 'npm',
     ];
 
-    /** Vendor texts that mean "not given". */
+    /** Vendor or product texts that mean "not given". */
     private const UNKNOWN = ['', 'n-a', 'na', 'unknown', 'unspecified', 'none'];
+
+    /** What projects append to their own name to form an organisation name: vue → vuejs, node → nodejs. */
+    private const VENDOR_SUFFIX = '/(?<=..)(js|io|hq|org|dev|team|labs|lang|project)$/';
 
     /**
      * @param  string[]  $productNames  the advisory's product names, as written
@@ -60,7 +63,7 @@ final class ProductMatch
      */
     public static function concerns(array $productNames, array $vendorNames, string $name, ?string $namespace = null, bool $requireVendor = true, array $vendorHints = []): ?bool
     {
-        [$embeddedVendor, $bareName] = self::split($name);
+        [$embeddedVendor, $bareName] = self::split(self::withoutGoMajor($name));
         $package = self::token($bareName);
         $vendor = self::token(ltrim((string) ($namespace !== null && trim($namespace) !== '' ? $namespace : $embeddedVendor), '@'));
         if ($package === '') {
@@ -82,7 +85,8 @@ final class ProductMatch
 
         $named = false;
         foreach ($productNames as $productName) {
-            if (trim((string) $productName) === '') {
+            // A placeholder ("n/a") names nothing.
+            if (in_array(self::token((string) $productName), self::UNKNOWN, true)) {
                 continue;
             }
             $named = true;
@@ -93,7 +97,15 @@ final class ProductMatch
             $candidates = $productVendor !== '' ? [...$vendors, self::token($productVendor)] : $vendors;
 
             $exact = $product === $package;
-            $loose = ! $exact && $product !== '' && (self::within($product, $package) || self::within($package, $product));
+            // Looser: one name inside the other on a word boundary ("log4j" ~
+            // "log4j-core") — also once the product has shed its vendor's
+            // name and version digits ("Apache Log4j2" → "log4j", "Apache
+            // Tomcat" → "tomcat").
+            $bare = self::withoutVendorWords($product, $candidates);
+            $loose = ! $exact && $product !== '' && (
+                self::within($product, $package) || self::within($package, $product)
+                || ($bare !== '' && $bare !== $product && ($bare === $package || self::within($bare, $package)))
+            );
             if (! $exact && ! $loose) {
                 continue;
             }
@@ -119,29 +131,40 @@ final class ProductMatch
 
     /**
      * Whether any advisory vendor is related to the package's vendor (or, for
-     * a package without one, to its own name): equal, sharing a telling word
-     * ("The PHP League" ~ "league", "Apache Software Foundation" ~
-     * "org.apache.logging.log4j"), or one a prefix of the other ("guzzle" ~
-     * "guzzlehttp", "vitejs" ~ "vite").
+     * a package without one, to its own name). Related means: the same once
+     * punctuation is ignored ("Node.js" ~ "nodejs"); sharing a telling word
+     * ("Apache Software Foundation" ~ "org.apache.logging.log4j"); one word
+     * being the other plus an organisation suffix ("vuejs" ~ "vue"); a prefix
+     * of at least four letters ("guzzle" ~ "guzzlehttp"); or one word inside
+     * the other when it has at least five ("thephpleague" ~ "league").
      *
      * @param  string[]  $vendors  normalised advisory vendors
      */
     private static function vendorRelated(array $vendors, string $reference): bool
     {
-        $referenceWords = self::words($reference);
+        // The reference's own words always count, even ones that are noise
+        // elsewhere: for PHP itself "php" IS the vendor.
+        $referenceWords = self::words($reference) ?: self::rawWords($reference);
+        $referenceStems = array_map(self::stem(...), $referenceWords);
+        $squashedReference = str_replace(['-', '.'], '', $reference);
+
         foreach ($vendors as $vendor) {
-            if ($vendor === $reference) {
+            if ($vendor === $reference || str_replace(['-', '.'], '', $vendor) === $squashedReference) {
                 return true;
             }
-            foreach (self::words($vendor) as $word) {
+            $vendorWords = array_filter(self::rawWords($vendor), fn (string $word) => (strlen($word) >= 3 && ! in_array($word, self::NOISE, true))
+                || in_array($word, $referenceWords, true) || in_array($word, $referenceStems, true));
+
+            foreach ($vendorWords as $word) {
                 foreach ($referenceWords as $referenceWord) {
-                    if ($word === $referenceWord) {
+                    if ($word === $referenceWord || self::stem($word) === self::stem($referenceWord)) {
                         return true;
                     }
-                    // Word against word, so hosting and legal noise ("github",
-                    // "inc") never counts as a shared prefix.
                     [$short, $long] = strlen($word) <= strlen($referenceWord) ? [$word, $referenceWord] : [$referenceWord, $word];
                     if (strlen($short) >= 4 && str_starts_with($long, $short)) {
+                        return true;
+                    }
+                    if (strlen($short) >= 5 && str_contains($long, $short)) {
                         return true;
                     }
                 }
@@ -155,9 +178,68 @@ final class ProductMatch
     private static function words(string $token): array
     {
         return array_values(array_filter(
-            preg_split('/[-.]+/', $token) ?: [],
+            self::rawWords($token),
             fn (string $word) => strlen($word) >= 3 && ! in_array($word, self::NOISE, true),
         ));
+    }
+
+    /** @return string[] every word of a normalised token */
+    private static function rawWords(string $token): array
+    {
+        return array_values(array_filter(preg_split('/[-.]+/', $token) ?: [], fn (string $word) => $word !== ''));
+    }
+
+    /** A word without the suffix organisations add to a project name. */
+    private static function stem(string $word): string
+    {
+        return (string) preg_replace(self::VENDOR_SUFFIX, '', $word);
+    }
+
+    /**
+     * A product token without its vendor's words and without version digits
+     * glued to a word: "apache-log4j2" by "Apache Software Foundation" →
+     * "log4j".
+     *
+     * @param  string[]  $vendors  normalised vendors of the advisory
+     */
+    private static function withoutVendorWords(string $product, array $vendors): string
+    {
+        $vendorWords = array_merge(...array_map(self::words(...), $vendors ?: ['']));
+        $words = array_filter(self::rawWords($product), fn (string $word) => ! in_array($word, $vendorWords, true));
+
+        return implode('-', array_filter(array_map(
+            fn (string $word) => preg_match('/^[a-z].*[a-z]\d+$/', $word) ? (string) preg_replace('/\d+$/', '', $word) : $word,
+            $words,
+        )));
+    }
+
+    /**
+     * The package's bare product name: without a vendor / path prefix and
+     * without a Go major-version suffix ("github.com/golang-jwt/jwt/v5" →
+     * "jwt", "gopkg.in/yaml.v3" → "yaml", "laravel/framework" → "framework").
+     */
+    public static function bareName(string $name): string
+    {
+        return self::split(self::withoutGoMajor($name))[1];
+    }
+
+    /** Whether two product names are the same name, vendor prefixes and Go major suffixes aside. */
+    public static function sameName(string $a, string $b): bool
+    {
+        $a = self::token(self::bareName($a));
+
+        return $a !== '' && $a === self::token(self::bareName($b));
+    }
+
+    /** "…/jwt/v5" → "…/jwt"; "gopkg.in/yaml.v3" → "gopkg.in/yaml". Only on path-like names. */
+    public static function withoutGoMajor(string $name): string
+    {
+        $name = trim($name);
+        if (! str_contains($name, '/')) {
+            return $name;
+        }
+
+        return (string) preg_replace(['#/v\d+$#', '#\.v\d+$#'], '', $name);
     }
 
     /** @return array{0: string, 1: string} [vendor part, name part] of "vendor/name" or "group:artifact" */

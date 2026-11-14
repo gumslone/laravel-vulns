@@ -22,6 +22,7 @@ use Gumslone\Vulns\Sources\RedHatSource;
 use Gumslone\Vulns\Sources\ShodanCvedbSource;
 use Gumslone\Vulns\Sources\SnykSource;
 use Gumslone\Vulns\Sources\VulnCheckSource;
+use Gumslone\Vulns\Sources\VulnerabilityLookupSource;
 use Gumslone\Vulns\Support\CpeResolver;
 use Gumslone\Vulns\Support\PurlBuilder;
 use Illuminate\Support\Facades\Cache;
@@ -44,6 +45,7 @@ class VulnsServiceProvider extends ServiceProvider
         'osv' => OsvSource::class,
         'github' => GitHubAdvisorySource::class,
         'nvd' => NvdSource::class,
+        'vulnerability_lookup' => VulnerabilityLookupSource::class,
         'cve_search' => CveSearchSource::class,
         'euvd' => EuvdSource::class,
         'snyk' => SnykSource::class,
@@ -66,7 +68,7 @@ class VulnsServiceProvider extends ServiceProvider
         // retry/timeout) into the nullable parameter and silently breaks them.
         foreach (self::SOURCES as $key => $class) {
             $this->app->bind($class, fn ($app) => match ($class) {
-                NvdSource::class, CveSearchSource::class => new $class(
+                NvdSource::class, CveSearchSource::class, VulnerabilityLookupSource::class => new $class(
                     $app->make(CpeResolver::class),
                     $app->bound(CpeLookup::class) ? $app->make(CpeLookup::class) : null,
                     null,
@@ -79,6 +81,13 @@ class VulnsServiceProvider extends ServiceProvider
                     null,
                     $this->optionsFor($key),
                     ...$this->deps(),
+                ),
+                // The curated CPE catalog, when the host binds one, tells EUVD
+                // who makes a package (see EuvdSource::vendorHints).
+                EuvdSource::class => new $class(
+                    null,
+                    $this->optionsFor($key),
+                    ...[...$this->deps(), $app->bound(CpeLookup::class) ? $app->make(CpeLookup::class) : null],
                 ),
                 default => new $class(null, $this->optionsFor($key), ...$this->deps()),
             });

@@ -31,15 +31,18 @@ final class RetryHandlerFactory
      *                                   (NVD answers a blown rate limit with 403, not 429)
      * @param  int|null  $maxDelayMs  cap on one back-off pause; null = 10 s
      * @param  int|null  $throttleDelayMs  first back-off after a throttle status; null = $baseDelayMs
-     * @param  int|null  $throttleMaxDelayMs  cap on a throttle back-off; null = twice
-     *                                        $throttleDelayMs, or $maxDelayMs when that is unset
+     * @param  int|null  $throttleMaxDelayMs  cap on a throttle back-off; null = the larger of
+     *                                        $maxDelayMs and twice $throttleDelayMs, or
+     *                                        $maxDelayMs when $throttleDelayMs is unset
+     * @param  int|null  $throttleMaxRetries  a throttle status is retried only while fewer than
+     *                                        this many retries have been made; null = $maxRetries
      */
-    public static function stack(int $maxRetries, int $baseDelayMs = 500, array $throttleStatuses = [429], ?int $maxDelayMs = null, ?int $throttleDelayMs = null, ?int $throttleMaxDelayMs = null): HandlerStack
+    public static function stack(int $maxRetries, int $baseDelayMs = 500, array $throttleStatuses = [429], ?int $maxDelayMs = null, ?int $throttleDelayMs = null, ?int $throttleMaxDelayMs = null, ?int $throttleMaxRetries = null): HandlerStack
     {
         $stack = HandlerStack::create();
         // Pushed after the defaults, so it runs inside http_errors and sees
         // the raw 4xx/5xx response before an exception is thrown.
-        $stack->push(self::middleware($maxRetries, $baseDelayMs, $throttleStatuses, $maxDelayMs, $throttleDelayMs, $throttleMaxDelayMs), 'retry');
+        $stack->push(self::middleware($maxRetries, $baseDelayMs, $throttleStatuses, $maxDelayMs, $throttleDelayMs, $throttleMaxDelayMs, $throttleMaxRetries), 'retry');
 
         return $stack;
     }
@@ -47,14 +50,15 @@ final class RetryHandlerFactory
     /**
      * @param  int[]  $throttleStatuses
      */
-    public static function middleware(int $maxRetries, int $baseDelayMs = 500, array $throttleStatuses = [429], ?int $maxDelayMs = null, ?int $throttleDelayMs = null, ?int $throttleMaxDelayMs = null): callable
+    public static function middleware(int $maxRetries, int $baseDelayMs = 500, array $throttleStatuses = [429], ?int $maxDelayMs = null, ?int $throttleDelayMs = null, ?int $throttleMaxDelayMs = null, ?int $throttleMaxRetries = null): callable
     {
+        $throttleMaxRetries ??= $maxRetries;
         $maxDelayMs ??= self::MAX_DELAY_MS;
         $throttleMaxDelayMs ??= $throttleDelayMs !== null ? max($maxDelayMs, $throttleDelayMs * 2) : $maxDelayMs;
         $throttleDelayMs ??= $baseDelayMs;
 
         return Middleware::retry(
-            function (int $retries, RequestInterface $request, ?ResponseInterface $response = null, ?\Throwable $exception = null) use ($maxRetries, $throttleStatuses): bool {
+            function (int $retries, RequestInterface $request, ?ResponseInterface $response = null, ?\Throwable $exception = null) use ($maxRetries, $throttleStatuses, $throttleMaxRetries): bool {
                 if ($retries >= $maxRetries) {
                     return false;
                 }
@@ -64,8 +68,14 @@ final class RetryHandlerFactory
                 }
 
                 $status = $response?->getStatusCode() ?? 0;
+                // "Slow down" has its own, usually smaller, budget: a client
+                // that is throttled again and again should give up sooner
+                // than one riding out a flapping server.
+                if (in_array($status, $throttleStatuses, true)) {
+                    return $retries < $throttleMaxRetries;
+                }
 
-                return in_array($status, $throttleStatuses, true) || $status >= 500;
+                return $status >= 500;
             },
             function (int $retries, ?ResponseInterface $response = null) use ($baseDelayMs, $maxDelayMs, $throttleStatuses, $throttleDelayMs, $throttleMaxDelayMs): int {
                 // "Slow down" and "something broke" are paced separately: a
@@ -74,12 +84,14 @@ final class RetryHandlerFactory
                 $throttled = $response !== null && in_array($response->getStatusCode(), $throttleStatuses, true);
                 [$base, $cap] = $throttled ? [$throttleDelayMs, $throttleMaxDelayMs] : [$baseDelayMs, $maxDelayMs];
 
+                // Never negative: a "Retry-After: -5" would reach the HTTP
+                // handler's usleep() and throw.
                 $retryAfter = $response?->getHeaderLine('Retry-After');
                 if (is_numeric($retryAfter)) {
-                    return (int) min((int) $retryAfter * 1000, $cap);
+                    return (int) max(0, min((int) $retryAfter * 1000, $cap));
                 }
 
-                return (int) min($base * (2 ** ($retries - 1)), $cap);
+                return (int) max(0, min($base * (2 ** ($retries - 1)), $cap));
             },
         );
     }

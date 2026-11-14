@@ -45,6 +45,7 @@ it('extracts version ranges from the live product_version grammar', function (st
         ->and($vuln->affectedRanges[0]['raw'])->toBe($text);
 })->with([
     'start + exclusive end' => ['2.13.1 <2.25.5', '>= 2.13.1, < 2.25.5'],
+    'start, comma, exclusive end' => ['1.7.0, < 1.16.0', '>= 1.7.0, < 1.16.0'],
     'unicode ≤ with zero start' => ['0 ≤1.8.3', '<= 1.8.3'],
     'module-name prefix' => ['log4j-core <2.17.1', '< 2.17.1'],
     'exact version behind prefix' => ['log4j-core 2.13.0', '= 2.13.0'],
@@ -207,7 +208,7 @@ it('keeps only the hits that are about the package, not everything whose name co
     expect(array_map(fn ($v) => $v->vulnId, $results[0]))->toBe(['CVE-2031-5']);
 });
 
-it('looks packages that share a bare name up separately and gives each only its own advisories', function () {
+it('gives packages that share a bare name each only its own advisories, from one search', function () {
     $hits = [
         euvdHit('EUVD-2031-10', 'core', 'vueuse'),
         euvdHit('EUVD-2031-11', 'core', 'inertiajs'),
@@ -224,7 +225,7 @@ it('looks packages that share a bare name up separately and gives each only its 
         'vueuse-old' => new PackageData(name: 'core', version: '10.0.0', ecosystem: 'npm', namespace: '@vueuse'),
     ]);
 
-    expect($history)->toHaveCount(2) // one search per identity; the two @vueuse versions share theirs
+    expect($history)->toHaveCount(1) // one search for the shared name "core"; each identity keeps its own hits
         ->and(array_map(fn ($v) => $v->vulnId, $results['vueuse']))->toBe(['CVE-2031-10'])
         ->and(array_map(fn ($v) => $v->vulnId, $results['vueuse-old']))->toBe(['CVE-2031-10'])
         ->and(array_map(fn ($v) => $v->vulnId, $results['inertia']))->toBe(['CVE-2031-11']);

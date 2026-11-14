@@ -1,5 +1,87 @@
 # Changelog
 
+## 1.23.0
+
+### Added
+- **Version ranges and wildcards, on both sides** (`Support\VersionSet`).
+  An advisory range may be written in any common syntax, not only `>= a, < b`: alternatives
+  (`5.4.x || 5.5.x`, Composer's `|`), wildcards (`1.2.*`, `1.x`, Gradle's `1.2.+`), caret,
+  tilde (`~`, `~>`, `~=`), hyphen ranges and Maven / NuGet intervals — all of which used to be
+  "can't tell". And the **installed** version may itself be a constraint (`^1.6.0` from a
+  manifest without a lock file, `1.x` typed into a search): `VersionRange::isVulnerable()`
+  then answers whether the versions it allows overlap an affected range, `isPastAllFixes()`
+  goes by its lowest allowed version, and `VulnSearch` filters accordingly —
+  `axios@1.18.x` finds what can affect that line instead of every advisory axios ever had.
+  OSV is asked without a version for a constraint (it matches exact versions only), OSS Index
+  and Snyk are skipped, and a CPE built for one carries `*`. Reading is strict: prose, `!=`,
+  `latest`, a branch name or an unorderable bound stay "can't tell"; where ecosystems
+  disagree (`~1.2`) the wider reading is taken. A bare version as an advisory range (`8`) is
+  still left to the source that knows what it means.
+- **`VulnerabilityLookupSource`** — [Vulnerability-Lookup](https://www.vulnerability-lookup.org),
+  the successor of cve-search, through its documented API
+  (`/api/vulnerability/search/{vendor}/{product}`, `/api/vulnerability/{id}`). Source name
+  `vulnerability_lookup`, default instance `vulnerability.circl.lu`, record links to
+  `…/vuln/{id}`; config block `vulns.vulnerability_lookup` (`VULNS_VULNERABILITY_LOOKUP_*`),
+  registered in the service provider and the default priority order next to `cve_search`.
+  It shares the record parsing of `CveSearchSource` (CNA / CISA ADP / legacy v4 version data).
+  Background: `cve.circl.lu` — the default of `CveSearchSource` — has been a
+  Vulnerability-Lookup instance for a while and only still answers `/api/search` and
+  `/api/cve` as undocumented aliases; both sources return identical data from it.
+  **Opt-in**, so nothing changes for existing set-ups: enable it with
+  `VULNS_VULNERABILITY_LOOKUP_ENABLED=true` and set `VULNS_CVE_SEARCH_ENABLED=false` — with
+  both on against the same service every lookup is made twice.
+
+### Fixed
+Found by an independent review of 1.22.1 – 1.22.4.
+
+- **NVD: retries bypassed the pacer.** A retry was sent straight from the HTTP middleware, so
+  it never counted against the rate budget: one worker whose requests each met a 503 put ten
+  requests into a 30 s window against a limit of five, and a 403's retry left together with the
+  next paced request — the very thing that earns the next 403. A retry now sits out its
+  back-off and then takes its turn in the pacer like any first attempt.
+- **NVD: a 403 / 429 was retried eight times.** Raising the retry count for 5xx in 1.22.2 also
+  applied it to throttle statuses — 450 s of waiting instead of the 150 s the changelog
+  promised. They keep three retries (`NvdSource::THROTTLE_RETRIES`); `RetryHandlerFactory`
+  gains `throttleMaxRetries`.
+- **NVD: empty settings.** `VULNS_NVD_RETRY=` meant "never retry" and an empty
+  `VULNS_NVD_MIN_INTERVAL` / `VULNS_NVD_RETRY_DELAY` meant zero spacing / an immediate retry.
+  Empty now reads as unset. A negative `Retry-After` no longer reaches the HTTP handler
+  (it threw).
+- **`VulnSearch`: a source that failed was asked again.** Range and alias completion looked
+  ids up on a source that had just failed outright in the same search — with patient retries,
+  minutes of extra waiting. A source that is down is skipped for the rest of the search.
+- **EUVD: one package's answer served to another.** Packages were grouped by vendor and name
+  only, so two that differ in their CPE vendor — the Rust crate `openssl` and OpenSSL itself —
+  shared one filtered answer, in a batch and across the cache: whichever came first decided
+  for both. The identity (and the cache key) now includes the vendor hint.
+- **EUVD: the same search repeated per package.** `@vueuse/core`, `@inertiajs/core` and
+  `@babel/core` each walked every page of the search for "core". Packages that search the
+  same bare name now share the pages.
+- **EUVD: a sibling product's range could clear the package.** An advisory naming `vite`
+  without version text and `vite-plugin-foo <1.0.0` was dropped for vite 5.0.0. The package's
+  own entries decide; a product named without usable version text counts as "cannot tell".
+- **EUVD: names with more records than can be read.** A bare name such as "version" (9,090
+  records) or "core" was paged to `max_pages`, cut off and reported as incomplete — every
+  time, and nothing of it was about the package. Such a search is now repeated narrowed by
+  EUVD's own vendor filter to the package's vendor, its CPE vendor or — for a package with
+  neither — its own name, which is all the matching rules would accept anyway: two requests
+  and a complete answer instead of twenty and none. Only when even the vendor's share is too
+  large is the package still flagged.
+- **EUVD: "1.7.0, < 1.16.0" lost its lower bound** to the comma and read as "below 1.16.0".
+- **EUVD: Go modules searched by their major-version suffix** (`…/jwt/v5` searched "v5",
+  `gopkg.in/yaml.v3` "yaml.v3").
+- **`ProductMatch`: real vendor shapes were missed** — `vuejs` for `vue` and `koajs` for `koa`
+  (short names), `thephpleague` for `league/*`, the vendor of PHP and Node.js themselves
+  (their names are "noise" words elsewhere), `Apache Log4j2` / `Apache Tomcat` for the Maven
+  artifacts. A placeholder product name (`n/a`) is treated as no name, not as a mismatch.
+- `VulnsServiceProvider` now gives `EuvdSource` the bound `CpeLookup`, so 1.22.4's vendor
+  hint works for hosts that use the package's own provider.
+
+### Changed
+- `CveSearchSource` is now described as what it is — the adapter for a self-hosted
+  cve-search — and exposes `label()`, `searchPath()`, `recordPath()` and `recordUrl()` as
+  protected extension points. Its behaviour, name, endpoints and cache entries are unchanged.
+
 ## 1.22.4
 
 ### Fixed

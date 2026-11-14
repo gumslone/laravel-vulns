@@ -62,7 +62,9 @@ it('never answers "not affected" while any range is unreadable', function () {
     // The unreadable range may be the one that covers this version.
     expect(VersionRange::isVulnerable('5.3.2', ['>= 5.3.0.post1, < 5.3.5', '< 4.0']))->toBeNull()
         ->and(VersionRange::isVulnerable('1.5', ['>= 1:1.0, < 2.0', '< 0.5']))->toBeNull()
-        ->and(VersionRange::isVulnerable('3.0.5', ['< 2.0 || >= 3.0 < 3.1', '= 1.0']))->toBeNull()
+        ->and(VersionRange::isVulnerable('3.0.5', ['below 2.0, or 3.0 up to 3.1', '= 1.0']))->toBeNull()
+        // (an npm-style "||" range is readable since 1.23 — and decides)
+        ->and(VersionRange::isVulnerable('3.0.5', ['< 2.0 || >= 3.0 < 3.1', '= 1.0']))->toBeTrue()
         // an OSV event list it can't order
         ->and(VersionRange::isVulnerable('3.0.5', [['type' => 'ECOSYSTEM', 'events' => [['introduced' => '1:2.0']]], '< 1.0']))->toBeNull()
         // …but a match still decides, and all-readable ranges still clear

@@ -8,6 +8,7 @@ use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
 use Gumslone\Vulns\Support\PurlBuilder;
+use Gumslone\Vulns\Support\VersionSet;
 use GuzzleHttp\Client;
 use GuzzleHttp\Pool;
 use Psr\Log\LoggerInterface;
@@ -57,6 +58,9 @@ class OssIndexSource extends AbstractSource
     public function supports(PackageData $package): bool
     {
         return $package->version !== null
+            // The endpoint takes a purl with one exact version — a constraint
+            // ("^1.6.0") is not something it can be asked about.
+            && ! VersionSet::isRange($package->version)
             // toPurl() is null (never a throw) for coordinates no purl can express.
             && $package->toPurl() !== null;
     }
@@ -73,7 +77,7 @@ class OssIndexSource extends AbstractSource
         $keysByCoordinate = [];
         foreach ($packages as $key => $package) {
             $purl = $package->purl ?? $this->purlBuilder->fromPackageArray($package->toArray());
-            if ($purl && $package->version) {
+            if ($purl && $package->version && ! VersionSet::isRange($package->version)) {
                 $keysByCoordinate[$purl][] = $key;
             }
         }

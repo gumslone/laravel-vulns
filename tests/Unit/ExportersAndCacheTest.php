@@ -112,9 +112,10 @@ it('answers repeated product lookups from the cache — complete answers only', 
     // A truncated answer is never stored.
     $history = [];
     $page = fn () => new Response(200, [], json_encode(['items' => array_map(fn ($i) => ['id' => "EUVD-2030-{$i}", 'description' => 'x'], range(1, 100)), 'total' => 300]));
-    $euvd = new EuvdSource($stack([$page(), $page()], $history), ['max_pages' => 1], null, new ArrayCache);
+    // (each query: the bare-name search, then the vendor-narrowed one — both cut short)
+    $euvd = new EuvdSource($stack([$page(), $page(), $page(), $page()], $history), ['max_pages' => 1], null, new ArrayCache);
     $curl = [new PackageData(name: 'curl', version: '8.0.0', ecosystem: 'deb')];
     $euvd->queryBatch($curl);
     $euvd->queryBatch($curl);
-    expect($history)->toHaveCount(2);
+    expect($history)->toHaveCount(4);
 });

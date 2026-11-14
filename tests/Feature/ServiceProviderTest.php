@@ -3,6 +3,7 @@
 use Gumslone\Vulns\Sources\GitHubAdvisorySource;
 use Gumslone\Vulns\Sources\NvdSource;
 use Gumslone\Vulns\Sources\SnykSource;
+use Gumslone\Vulns\Sources\VulnerabilityLookupSource;
 use Gumslone\Vulns\VulnSearch;
 use Gumslone\Vulns\VulnsServiceProvider;
 use Illuminate\Support\ServiceProvider;
@@ -12,7 +13,7 @@ it('resolves VulnSearch with every source, straight out of the box', function ()
 
     expect($search)->toBeInstanceOf(VulnSearch::class)
         ->and($search->availableSources())
-        ->toBe(['osv', 'github', 'nvd', 'cve_search', 'euvd', 'snyk',
+        ->toBe(['osv', 'github', 'nvd', 'vulnerability_lookup', 'cve_search', 'euvd', 'snyk',
             'oss_index', 'redhat', 'shodan_cvedb', 'mitre', 'vulncheck']);
 });
 
@@ -71,4 +72,16 @@ it('turns range completion on by default (GitHub, then NVD) and lets config swit
     config(['vulns.complete_ranges.enabled' => false]);
     app()->forgetInstance(VulnSearch::class);
     expect($setting())->toBeNull();
+});
+
+it('registers Vulnerability-Lookup as an opt-in source next to CVE-Search', function () {
+    // Off by default: `cve_search` is on by default and points at the same
+    // public service, so enabling both would make every lookup twice.
+    expect(app(VulnSearch::class)->enabledSources())->toContain('cve_search')->not->toContain('vulnerability_lookup');
+
+    config(['vulns.vulnerability_lookup.enabled' => true, 'vulns.cve_search.enabled' => false]);
+    $this->app->forgetInstance(VulnSearch::class);
+
+    expect(app(VulnSearch::class)->enabledSources())->toContain('vulnerability_lookup')->not->toContain('cve_search')
+        ->and(app(VulnerabilityLookupSource::class)->name())->toBe('vulnerability_lookup');
 });

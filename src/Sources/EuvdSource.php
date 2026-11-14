@@ -55,19 +55,26 @@ class EuvdSource extends AbstractSource
     {
         $results = array_fill_keys(array_keys($packages), []);
 
-        // Lookup is a product-name search (no version), so the same package
-        // at different versions shares one request. Packages are grouped by
-        // IDENTITY, not bare name: "@vueuse/core" and "@inertiajs/core" both
-        // search "core", but an advisory concerns at most one of them.
-        $keysByProduct = [];
+        // The lookup is a product-name search (no version). Two groupings:
+        //  - by IDENTITY — who the package is: vendor, name and CPE-vendor
+        //    hint. Every version of a package shares one answer, while
+        //    "@vueuse/core" and "@inertiajs/core", or the Rust crate
+        //    "openssl" and OpenSSL itself, keep theirs apart;
+        //  - by SEARCH TERM — the bare name. Identities that search the same
+        //    word read the same pages, which are fetched once.
+        $keysByIdentity = [];
         $identities = [];
-        $vendorHints = [];
+        $hints = [];
+        $identitiesByTerm = [];
         foreach ($packages as $key => $package) {
-            $lookup = strtolower(trim((string) $package->namespace)).'|'.$package->name;
-            $keysByProduct[$lookup][] = $key;
-            $identities[$lookup] = $package;
-            // Resolved once per identity: the lookup may be a database round-trip.
-            $vendorHints[$lookup] ??= $this->vendorHints($package);
+            $packageHints = $this->vendorHints($package);
+            $identity = strtolower(trim((string) $package->namespace)).'|'.$package->name.'|'.implode(',', $packageHints);
+            $keysByIdentity[$identity][] = $key;
+            if (! isset($identities[$identity])) {
+                $identities[$identity] = $package;
+                $hints[$identity] = $packageHints;
+                $identitiesByTerm[self::searchTerm($package)][] = $identity;
+            }
         }
 
         // `size` tops out at 100; `page` (0-based) and the response's `total`
@@ -82,39 +89,52 @@ class EuvdSource extends AbstractSource
         $failed = 0;
         $requested = 0;
         $firstReason = null;
-        $itemsByProduct = array_fill_keys(array_keys($keysByProduct), []);
-        // Records read per lookup — paging runs on this, not on what was
-        // kept: the search is a "contains" match on the product name, and
-        // only the records that concern the package are held on to.
-        $seen = array_fill_keys(array_keys($keysByProduct), 0);
+        $itemsByIdentity = array_fill_keys(array_keys($identities), []);
 
-        $pending = array_fill_keys(array_keys($keysByProduct), 0);
-        // Product-level lookups answered recently come from the cache (see
+        // An identity answered recently comes from the cache (see
         // AbstractSource::cachedLookup) — only complete answers are stored.
-        $truncated = [];
         // The stored answer is already filtered to the package, so the key
-        // carries the identity and the matching mode, not just the name.
-        $cachePrefix = 'euvd|'.$this->config('match', 'strict').'|'.($this->cpeLookup !== null ? 'cpe|' : '');
-        foreach (array_keys($pending) as $lookup) {
-            if (($cached = $this->cachedLookup($cachePrefix.$lookup)) !== null) {
-                $itemsByProduct[$lookup] = $cached;
-                unset($pending[$lookup]);
+        // is the identity (hint included) and the matching mode.
+        $cachePrefix = 'euvd|'.$this->config('match', 'strict').'|';
+        $cached = [];
+        foreach (array_keys($identities) as $identity) {
+            if (($hit = $this->cachedLookup($cachePrefix.$identity)) !== null) {
+                $itemsByIdentity[$identity] = $hit;
+                $cached[$identity] = true;
             }
         }
-        $fetched = array_keys($pending);
+
+        // A term is searched while any identity that uses it lacks an answer;
+        // only those identities are filled from its pages.
+        $pending = [];
+        $seen = []; // records READ per term — paging runs on this, not on what was kept
+        foreach ($identitiesByTerm as $term => $termIdentities) {
+            $open = array_values(array_filter($termIdentities, fn (string $identity) => ! isset($cached[$identity])));
+            $identitiesByTerm[$term] = $open;
+            if ($open !== []) {
+                $pending[$term] = 0;
+                $seen[$term] = 0;
+            }
+        }
+        $searched = array_keys($pending);
+        $truncated = [];
+        // Terms with more records than `max_pages` allows to read: searched
+        // again per identity, narrowed to the package's vendor (see below).
+        $tooMany = [];
+
         while ($pending !== []) {
             $next = [];
-            $requests = function () use ($pending, $pageSize, $identities) {
-                foreach ($pending as $product => $page) {
-                    yield $product => fn () => $this->http->getAsync('search', [
-                        'query' => ['product' => self::searchTerm($identities[$product]), 'size' => $pageSize] + ($page > 0 ? ['page' => $page] : []),
+            $requests = function () use ($pending, $pageSize) {
+                foreach ($pending as $term => $page) {
+                    yield $term => fn () => $this->http->getAsync('search', [
+                        'query' => ['product' => (string) $term, 'size' => $pageSize] + ($page > 0 ? ['page' => $page] : []),
                     ]);
                 }
             };
 
             $pool = new Pool($this->http, $requests(), [
                 'concurrency' => (int) $this->config('max_concurrency', 8),
-                'fulfilled' => function ($response, $product) use (&$itemsByProduct, &$seen, &$next, &$failed, &$firstReason, &$truncated, $pending, $keysByProduct, $identities, $vendorHints, $pageSize, $maxPages) {
+                'fulfilled' => function ($response, $term) use (&$itemsByIdentity, &$seen, &$next, &$failed, &$firstReason, &$tooMany, $pending, $identitiesByTerm, $identities, $hints, $pageSize, $maxPages) {
                     $data = json_decode($response->getBody()->getContents(), true);
 
                     // A 200 whose body isn't the expected JSON (the SPA's HTML
@@ -123,43 +143,47 @@ class EuvdSource extends AbstractSource
                     if (! is_array($data) || ! array_key_exists('items', $data) || ! is_array($data['items'])) {
                         $failed++;
                         $firstReason ??= 'malformed response body';
-                        $this->log('warning', '[vulns] EUVD returned a malformed body', ['product' => $product]);
+                        $this->log('warning', '[vulns] EUVD returned a malformed body', ['product' => $term]);
 
                         return;
                     }
 
                     $items = $data['items'];
-                    $seen[$product] += count($items);
-                    // Keep only what concerns THIS package, page by page: a
-                    // generic name ("core", "config") returns thousands of
-                    // other vendors' products, far too many to carry along.
-                    $itemsByProduct[$product] = array_merge($itemsByProduct[$product], array_values(array_filter(
-                        $items,
-                        fn ($item) => is_array($item) && $this->concerns($item, $identities[$product], $vendorHints[$product]),
-                    )));
+                    $seen[$term] += count($items);
+                    // Keep, per identity, only what concerns THAT package, page
+                    // by page: a generic name ("core", "config") returns
+                    // thousands of other vendors' products, far too many to
+                    // carry along.
+                    foreach ($identitiesByTerm[$term] as $identity) {
+                        foreach ($items as $item) {
+                            if (is_array($item) && $this->concerns($item, $identities[$identity], $hints[$identity])) {
+                                $itemsByIdentity[$identity][] = $item;
+                            }
+                        }
+                    }
 
                     $total = is_numeric($data['total'] ?? null) ? (int) $data['total'] : null;
-                    $more = $total !== null ? $seen[$product] < $total : count($items) >= $pageSize;
+                    $more = $total !== null ? $seen[$term] < $total : count($items) >= $pageSize;
                     if ($items === [] || ! $more) {
                         return;
                     }
-                    if ($maxPages <= $pending[$product] + 1) {
-                        $truncated[$product] = true;
-                        $this->warn(
-                            sprintf('results for "%s" truncated at %d of %s records (max_pages=%d)', self::searchTerm($identities[$product]), $seen[$product], $total ?? 'unknown', $maxPages),
-                            [], $keysByProduct[$product],
-                        );
+                    // More than can be read — known from the first page when
+                    // the server says how many there are, else on reaching
+                    // the cap. No point in paging on through other vendors'
+                    // products: the term is searched again, by vendor.
+                    if (($total !== null && $total > $maxPages * $pageSize) || $maxPages <= $pending[$term] + 1) {
+                        $tooMany[$term] = $total;
 
                         return;
                     }
-                    $next[$product] = $pending[$product] + 1;
+                    $next[$term] = $pending[$term] + 1;
                 },
-                'rejected' => function ($reason, $product) use (&$failed, &$firstReason) {
+                'rejected' => function ($reason, $term) use (&$failed, &$firstReason) {
                     $failed++;
                     $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
                     $firstReason ??= $message;
                     $this->log('warning', '[vulns] EUVD query failed', [
-                        'product' => $product,
+                        'product' => $term,
                         'error' => $message,
                     ]);
                 },
@@ -170,19 +194,59 @@ class EuvdSource extends AbstractSource
             $pending = $next;
         }
 
+        // A bare name with thousands of records ("core", "version", "config")
+        // cannot be read to the end, and almost none of it is about the
+        // package. EUVD's own vendor filter — a case-insensitive "contains"
+        // match — narrows it to what could pass concerns() anyway: records
+        // whose vendor contains the package's vendor, its CPE vendor, or —
+        // for a package without either — its own name. What was read of the
+        // unfiltered search is kept as well; duplicates fall out on parsing.
+        foreach ($tooMany as $term => $total) {
+            foreach ($identitiesByTerm[$term] as $identity) {
+                foreach ($this->vendorSearches($identities[$identity], $hints[$identity]) as $vendor) {
+                    try {
+                        [$items, $complete] = $this->searchByVendor((string) $term, $vendor, $pageSize, $maxPages);
+                        $requested++;
+                    } catch (\Throwable $e) {
+                        $failed++;
+                        $requested++;
+                        $firstReason ??= $e->getMessage();
+                        $this->log('warning', '[vulns] EUVD query failed', ['product' => $term, 'vendor' => $vendor, 'error' => $e->getMessage()]);
+
+                        continue;
+                    }
+                    foreach ($items as $item) {
+                        if (is_array($item) && $this->concerns($item, $identities[$identity], $hints[$identity])) {
+                            $itemsByIdentity[$identity][] = $item;
+                        }
+                    }
+                    if (! $complete) {
+                        // Even the vendor's share is too large to read.
+                        $truncated[$identity] = true;
+                        $this->warn(
+                            sprintf('results for "%s" (vendor "%s") truncated at %d records of %s (max_pages=%d)', $term, $vendor, $maxPages * $pageSize, $total ?? 'unknown', $maxPages),
+                            [], $keysByIdentity[$identity],
+                        );
+                    }
+                }
+            }
+        }
+
         if ($failed > 0) {
             throw new \RuntimeException(sprintf(
                 'EUVD: %d of %d requests failed: %s', $failed, $requested, $firstReason,
             ));
         }
 
-        foreach ($fetched as $lookup) {
-            if (! isset($truncated[$lookup])) {
-                $this->cacheLookup($cachePrefix.$lookup, $itemsByProduct[$lookup]);
+        foreach ($searched as $term) {
+            foreach ($identitiesByTerm[$term] as $identity) {
+                if (! isset($truncated[$identity])) {
+                    $this->cacheLookup($cachePrefix.$identity, $itemsByIdentity[$identity]);
+                }
             }
         }
 
-        foreach ($itemsByProduct as $product => $items) {
+        foreach ($itemsByIdentity as $identity => $items) {
             $vulns = [];
             foreach (array_filter($items, 'is_array') as $item) {
                 $vuln = $this->parseItem($item);
@@ -192,19 +256,88 @@ class EuvdSource extends AbstractSource
             }
 
             // What is left concerns the package (see concerns()); now drop
-            // the advisories the queried version provably escapes. Fail-safe: an advisory is
-            // only dropped when its ranges for THIS product parsed cleanly
-            // and none matched — unparseable or missing version text keeps
-            // the advisory ("can't tell" must not read as "not affected").
-            foreach ($keysByProduct[$product] as $key) {
+            // the advisories the queried version provably escapes. Fail-safe:
+            // an advisory is only dropped when its ranges for THIS product
+            // parsed cleanly and none matched — unparseable or missing
+            // version text keeps the advisory ("can't tell" must not read as
+            // "not affected").
+            $term = self::searchTerm($identities[$identity]);
+            foreach ($keysByIdentity[$identity] as $key) {
                 $results[$key] = array_values(array_filter(
                     $vulns,
-                    fn (VulnerabilityData $vuln) => $this->versionMayBeAffected($vuln, self::searchTerm($identities[$product]), $packages[$key]->version),
+                    fn (VulnerabilityData $vuln) => $this->versionMayBeAffected($vuln, $term, $packages[$key]->version),
                 ));
             }
         }
 
         return $results;
+    }
+
+    /**
+     * The vendor strings to narrow an oversized search by, most telling first
+     * and at most four: the package's vendor (an npm scope without its "@",
+     * the last segment of a path-like namespace, the telling words of a
+     * dotted Maven group) and its CPE vendor — or, for a package that has
+     * neither, its own name, which is what concerns() would accept as the
+     * vendor of a self-named project anyway.
+     *
+     * @param  string[]  $vendorHints
+     * @return string[]
+     */
+    private function vendorSearches(PackageData $package, array $vendorHints): array
+    {
+        $candidates = [];
+        $namespace = trim(ltrim(trim((string) $package->namespace), '@'), '/');
+        if ($namespace === '' && preg_match('#^(.+)[/:][^/:]+$#', ProductMatch::withoutGoMajor($package->name), $m)) {
+            $namespace = ltrim($m[1], '@'); // the name carries its vendor: "vendor/name", "group:artifact"
+        }
+        if ($namespace !== '') {
+            $last = (string) preg_replace('#^.*/#', '', $namespace);
+            if (str_contains($last, '.') && ! str_contains($namespace, '/')) {
+                // A Maven group: "org.apache.logging.log4j" is nobody's vendor name; its words are.
+                foreach (explode('.', $last) as $word) {
+                    if (strlen($word) >= 4 && ! in_array($word, ['org', 'com', 'net', 'io'], true)) {
+                        $candidates[] = $word;
+                    }
+                }
+            } else {
+                $candidates[] = $last;
+            }
+        }
+        foreach ($vendorHints as $hint) {
+            $candidates[] = (string) preg_replace('/_project$/i', '', $hint);
+        }
+        if ($candidates === []) {
+            $candidates[] = self::searchTerm($package);
+        }
+
+        return array_slice(array_values(array_unique(array_filter(array_map('strtolower', $candidates)))), 0, 4);
+    }
+
+    /**
+     * Every record for a product term whose vendor contains `$vendor`.
+     *
+     * @return array{0: array<int, mixed>, 1: bool} [records, whether all of them were read]
+     */
+    private function searchByVendor(string $term, string $vendor, int $pageSize, int $maxPages): array
+    {
+        $items = [];
+        for ($page = 0; $page < $maxPages; $page++) {
+            $data = json_decode((string) $this->http->get('search', [
+                'query' => ['product' => $term, 'vendor' => $vendor, 'size' => $pageSize] + ($page > 0 ? ['page' => $page] : []),
+            ])->getBody(), true);
+            if (! is_array($data) || ! is_array($data['items'] ?? null)) {
+                throw new \RuntimeException('malformed response body');
+            }
+
+            $items = array_merge($items, $data['items']);
+            $total = is_numeric($data['total'] ?? null) ? (int) $data['total'] : null;
+            if ($data['items'] === [] || ($total !== null ? count($items) >= $total : count($data['items']) < $pageSize)) {
+                return [$items, true];
+            }
+        }
+
+        return [$items, false];
     }
 
     /**
@@ -214,10 +347,8 @@ class EuvdSource extends AbstractSource
      */
     private static function searchTerm(PackageData $package): string
     {
-        $name = trim($package->name);
-        $at = max((int) strrpos($name, '/'), (int) strrpos($name, ':'));
-
-        return $at > 0 ? substr($name, $at + 1) : $name;
+        // Also without a Go major-version suffix: ".../jwt/v5" is "jwt".
+        return ProductMatch::bareName($package->name);
     }
 
     /**
@@ -414,6 +545,19 @@ class EuvdSource extends AbstractSource
             ], fn ($v) => $v !== null);
         }
 
+        // A product the advisory names without usable version text is a
+        // constraint that cannot be read. Say so: left out, another product's
+        // clean range would stand for the whole advisory and clear ours.
+        $covered = array_map(fn (array $range) => strtolower((string) ($range['product'] ?? '')), $ranges);
+        foreach ($item['enisaIdProduct'] ?? [] as $entry) {
+            $product = trim((string) ($entry['product']['name'] ?? ''));
+            if ($product !== '' && ! in_array(strtolower($product), $covered, true)
+                && ! in_array(strtolower($product), ['n/a', 'na', '-', 'unspecified', 'unknown'], true)) {
+                $ranges[] = ['product' => $product, 'source' => 'euvd'];
+                $covered[] = strtolower($product);
+            }
+        }
+
         return [$ranges, array_values(array_unique($fixed))];
     }
 
@@ -438,7 +582,10 @@ class EuvdSource extends AbstractSource
 
         // "<start> <op><end>" or "<module-name> <op><end>" or bare "<op><end>"
         if (preg_match("/^(.*?)\s*(<=|>=|<|>)\s*({$version})$/u", $text, $m)) {
-            $prefix = trim($m[1]);
+            // "1.7.0, < 1.16.0" — the comma is punctuation, not part of the
+            // version; left on, the lower bound was lost and the range read
+            // as "everything below 1.16.0".
+            $prefix = rtrim(trim($m[1]), " ,;\t");
             $clauses = [];
             // The prefix is a lower bound only when it IS a version; module
             // names ("log4j-core") and vendor prose are dropped. "0" means
@@ -487,13 +634,23 @@ class EuvdSource extends AbstractSource
             return true;
         }
 
-        // Word-boundary product match: "express" must not borrow ExpressVPN's
-        // ranges (nor be cleared by them).
+        // The ranges of the product itself decide. Only when the advisory
+        // has none under that exact name do look-alikes count ("log4j" for
+        // "log4j-core") — on a word boundary, so "express" neither borrows
+        // ExpressVPN's ranges nor is cleared by them. A sibling's range
+        // ("vite-plugin-foo") must never speak for the package when the
+        // package is named in the advisory too.
+        $ranges = array_values(array_filter($vuln->affectedRanges, 'is_array'));
         $relevant = array_values(array_filter(
-            $vuln->affectedRanges,
-            fn ($range) => is_array($range)
-                && VersionRange::sameProduct((string) ($range['product'] ?? ''), $product),
+            $ranges,
+            fn (array $range) => ProductMatch::sameName((string) ($range['product'] ?? ''), $product),
         ));
+        if ($relevant === []) {
+            $relevant = array_values(array_filter(
+                $ranges,
+                fn (array $range) => VersionRange::sameProduct((string) ($range['product'] ?? ''), $product),
+            ));
+        }
 
         if ($relevant === []) {
             return true; // nothing product-specific to judge by

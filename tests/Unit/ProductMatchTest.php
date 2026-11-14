@@ -22,7 +22,7 @@ it('accepts the package under its own name and vendor', function (array $product
     'self-named with suffix' => [['express'], ['expressjs'], 'express', null],
     'self-named vendor prefix' => [['vite'], ['vitejs'], 'vite', null],
     'product carries its vendor' => [['axios/axios'], ['someone'], 'axios', null],
-    'Maven group and loose name' => [['Apache Log4j2', 'log4j'], ['Apache Software Foundation'], 'log4j-core', 'org.apache.logging.log4j'],
+    'Maven group and loose name' => [['log4j'], ['Apache Software Foundation'], 'log4j-core', 'org.apache.logging.log4j'],
     'Go module path' => [['gin'], ['gin-gonic'], 'gin', 'github.com/gin-gonic'],
     'one of several products' => [['other-thing', 'curl'], ['curl'], 'curl', null],
     'advisory without vendor' => [['curl'], [], 'curl', null],

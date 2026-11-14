@@ -33,7 +33,7 @@ return [
     */
     'priority' => [
         'osv', 'github', 'nvd', 'mitre', 'redhat', 'oss_index',
-        'vulncheck', 'snyk', 'euvd', 'shodan_cvedb', 'cve_search',
+        'vulncheck', 'snyk', 'euvd', 'shodan_cvedb', 'vulnerability_lookup', 'cve_search',
     ],
     'merge' => env('VULNS_MERGE', 'priority'),
 
@@ -163,6 +163,27 @@ return [
         'retry' => (int) env('VULNS_NVD_RETRY', 8),
     ],
 
+    // Vulnerability-Lookup (https://www.vulnerability-lookup.org), the
+    // successor of cve-search: CIRCL's public instance or your own, through
+    // its documented API. Off by default only because `cve_search` below is
+    // on by default and points at the same public service (cve.circl.lu is a
+    // Vulnerability-Lookup instance answering the old paths as aliases) —
+    // enable this one and disable that one; both on makes every lookup twice.
+    'vulnerability_lookup' => [
+        'enabled' => env('VULNS_VULNERABILITY_LOOKUP_ENABLED', false),
+        'base_url' => env('VULNS_VULNERABILITY_LOOKUP_URL', 'https://vulnerability.circl.lu/api'),
+        'page_size' => (int) env('VULNS_VULNERABILITY_LOOKUP_PAGE_SIZE', 100),
+        // Every page is walked; past this cap results are kept but the
+        // truncation lands in errors() and coverage() ('failed').
+        'max_pages' => (int) env('VULNS_VULNERABILITY_LOOKUP_MAX_PAGES', 20),
+        'result_cache_ttl' => (int) env('VULNS_VULNERABILITY_LOOKUP_RESULT_CACHE_TTL', 3600),
+        'verify_tls' => env('VULNS_VULNERABILITY_LOOKUP_VERIFY_TLS', true),
+        'max_concurrency' => (int) env('VULNS_VULNERABILITY_LOOKUP_CONCURRENCY', 8),
+    ],
+
+    // A self-hosted cve-search. Its default URL is the public CIRCL service,
+    // which is Vulnerability-Lookup by now — prefer `vulnerability_lookup`
+    // above for that.
     'cve_search' => [
         'enabled' => env('VULNS_CVE_SEARCH_ENABLED', true),
         'base_url' => env('VULNS_CVE_SEARCH_URL', 'https://cve.circl.lu/api'),

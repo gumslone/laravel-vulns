@@ -11,7 +11,7 @@ interface Source
 {
     /**
      * Return the unique source identifier.
-     * e.g. 'osv', 'nvd', 'github', 'snyk', 'euvd', 'cve_search'
+     * e.g. 'osv', 'nvd', 'github', 'snyk', 'euvd', 'vulnerability_lookup'
      */
     public function name(): string;
 

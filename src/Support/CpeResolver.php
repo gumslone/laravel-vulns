@@ -23,7 +23,8 @@ class CpeResolver
     {
         $vendor = $this->normaliseVendor($pkg);
         $product = $this->normaliseProduct($pkg->name);
-        $version = $pkg->version ? $this->normaliseVersion($pkg->version) : '*';
+        // A constraint ("^1.6.0") is not a version a CPE can carry: any version.
+        $version = $pkg->version && ! VersionSet::isRange($pkg->version) ? $this->normaliseVersion($pkg->version) : '*';
 
         if (! $vendor || ! $product) {
             return null;
@@ -43,7 +44,7 @@ class CpeResolver
     {
         $vendor = $this->normaliseVendor($pkg);
         $product = $this->normaliseProduct($pkg->name);
-        $version = $pkg->version ? $this->normaliseVersion($pkg->version) : '';
+        $version = $pkg->version && ! VersionSet::isRange($pkg->version) ? $this->normaliseVersion($pkg->version) : '';
 
         if (! $vendor || ! $product) {
             return null;

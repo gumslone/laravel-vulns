@@ -67,12 +67,16 @@ it('EUVD walks every page (size 100, page N, total) and warns only when the page
         ->and($queries[2]['page'])->toBe('2')
         ->and($source->warnings())->toBe([]);
 
-    // Cut short by max_pages: results kept, but flagged against the package.
+    // More records than max_pages allows: the search is repeated narrowed to
+    // the vendor; when even that is cut short, results are kept but flagged
+    // against the package.
     $history = [];
-    $capped = new EuvdSource(new Client(['handler' => failSafeStack([$page(1, 100, 227)], $history)]), ['max_pages' => 1]);
+    $capped = new EuvdSource(new Client(['handler' => failSafeStack([$page(1, 100, 227), $page(1, 100, 227)], $history)]), ['max_pages' => 1]);
     $results = $capped->queryBatch(['pkg' => new PackageData(name: 'curl', version: '7.88.1', ecosystem: 'deb')]);
+    parse_str($history[1]['request']->getUri()->getQuery(), $narrowed);
     expect($results['pkg'])->toHaveCount(100)
-        ->and($capped->warnings()[0])->toContain('truncated at 100 of 227')
+        ->and($narrowed['vendor'])->toBe('curl')
+        ->and($capped->warnings()[0])->toContain('truncated at 100 records of 227')
         ->and($capped->incompleteKeys())->toBe(['pkg']);
 });
 

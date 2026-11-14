@@ -8,6 +8,7 @@ use Gumslone\Vulns\Data\PackageData;
 use Gumslone\Vulns\Data\VulnerabilityData;
 use Gumslone\Vulns\Severity as SeverityLevel;
 use Gumslone\Vulns\Support\CvssCalculator;
+use Gumslone\Vulns\Support\VersionSet;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Pool;
@@ -433,13 +434,16 @@ class OsvSource extends AbstractSource
             return ['commit' => $package->gitCommitHash];
         }
 
-        return [
-            'version' => $package->version,
-            'package' => [
-                'name' => $package->registryName(),
-                'ecosystem' => $this->mapEcosystem($package->ecosystem),
-            ],
-        ];
+        $coordinates = ['package' => [
+            'name' => $package->registryName(),
+            'ecosystem' => $this->mapEcosystem($package->ecosystem),
+        ]];
+
+        // OSV matches an exact version. For a constraint ("^1.6.0", "1.x") it
+        // would answer nothing; asked without a version it returns every
+        // advisory of the package, and the affected ranges those carry are
+        // what the caller's version filter overlaps the constraint with.
+        return VersionSet::isRange($package->version) ? $coordinates : ['version' => $package->version] + $coordinates;
     }
 
     private function mapEcosystem(string $ecosystem): ?string

@@ -33,6 +33,9 @@ class NvdSource extends AbstractSource
      */
     public const DEFAULT_RETRIES = 8;
 
+    /** Retries of a 403 / 429 — a blown rate limit — however many `retry` allows for a 5xx. */
+    public const THROTTLE_RETRIES = 3;
+
     use BuildsCpeRanges;
     use ResolvesLookupCpe;
 
@@ -42,17 +45,51 @@ class NvdSource extends AbstractSource
     {
         $this->boot($options, $logger, $cache);
         $this->apiKey = $this->config('api_key');
+        $retries = $this->numeric('retry');
+        $stack = self::retryStack(
+            $retries !== null ? (int) $retries : self::DEFAULT_RETRIES,
+            $this->rateWindow(),
+            $this->spacing(),
+            $this->numeric('retry_delay'),
+            // A retry is a request like any other: it sits out its back-off
+            // and then takes its turn in the pacer. Sent straight from the
+            // HTTP middleware, retries were invisible to the rate budget —
+            // one worker whose requests each failed once put twice the limit
+            // on the wire, which is what earns the next 403.
+            function (float $backoff): void {
+                ($this->sleeper())($backoff);
+                $this->throttle();
+            },
+        );
+        // 'handler_base' is a test seam (like 'handler', 'clock' and 'sleep'):
+        // what the retry stack finally hands a request to.
+        if (is_callable($base = $this->config('handler_base'))) {
+            $stack->setHandler($base);
+        }
+
         $this->http = $http ?? $this->makeClient(
             rtrim((string) $this->config('base_url', 'https://services.nvd.nist.gov/rest/json'), '/').'/',
             array_filter(['apiKey' => $this->apiKey]),
-            defaultRetry: 3,
-            handler: self::retryStack(
-                (int) $this->config('retry', self::DEFAULT_RETRIES),
-                $this->rateWindow(),
-                $this->spacing(),
-                $this->config('retry_delay') !== null ? (float) $this->config('retry_delay') : null,
-            ),
+            handler: $stack,
         );
+    }
+
+    /**
+     * A numeric option, or null when it is unset. An empty string counts as
+     * unset: `VULNS_NVD_RETRY=` in an .env file must not mean "never retry",
+     * nor an empty interval "no spacing".
+     */
+    private function numeric(string $key): ?float
+    {
+        $value = $this->config($key);
+
+        return is_numeric($value) ? (float) $value : null;
+    }
+
+    /** How the source waits — real sleep, or the 'sleep' test seam. */
+    private function sleeper(): callable
+    {
+        return $this->config('sleep') ?? static fn (float $seconds) => usleep((int) ceil(max(0.0, $seconds) * 1_000_000));
     }
 
     public function name(): string
@@ -305,26 +342,51 @@ class NvdSource extends AbstractSource
      * half minutes of trouble, as 1.22.0 did, but recovers from a short burst
      * in seconds.
      *
+     * The larger retry count is for the flapping service only. A 403 / 429
+     * keeps the three retries it always had (30 s, 60 s, 60 s): a client that
+     * is still throttled after that is doing something wrong, and waiting
+     * seven and a half minutes on it helps nobody.
+     *
      * @param  float|null  $retryDelay  first 5xx back-off in seconds; null = 2 s
+     * @param  callable(float): void|null  $beforeRetry  takes over the wait before a retry:
+     *                                                   called with the back-off in seconds, it
+     *                                                   must sit it out (and may pace the retry);
+     *                                                   null leaves the wait to the HTTP handler
      */
-    public static function retryStack(int $retries, int $window, float $spacing, ?float $retryDelay = null): HandlerStack
+    public static function retryStack(int $retries, int $window, float $spacing, ?float $retryDelay = null, ?callable $beforeRetry = null): HandlerStack
     {
         $transient = (int) round(max($retryDelay ?? 2.0, $spacing) * 1000);
 
-        return RetryHandlerFactory::stack(
+        $stack = RetryHandlerFactory::stack(
             $retries,
             $transient,
             [403, 429],
             max($window * 1000, $transient),
             throttleDelayMs: $window * 1000,
             throttleMaxDelayMs: $window * 2000,
+            throttleMaxRetries: min($retries, self::THROTTLE_RETRIES),
         );
+
+        if ($beforeRetry !== null) {
+            // Pushed after 'retry', so it runs inside it: once per attempt.
+            $stack->push(static fn (callable $handler): callable => static function ($request, array $options) use ($handler, $beforeRetry) {
+                if (($options['retries'] ?? 0) > 0) {
+                    $backoff = (int) ($options['delay'] ?? 0);
+                    unset($options['delay']); // waited here, not again in the HTTP handler
+                    $beforeRetry($backoff / 1000);
+                }
+
+                return $handler($request, $options);
+            }, 'pace-retries');
+        }
+
+        return $stack;
     }
 
     /** Length of NVD's rolling rate-limit window in seconds. */
     private function rateWindow(): int
     {
-        return max(1, (int) $this->config('rate_limit_window', 30));
+        return max(1, (int) ($this->numeric('rate_limit_window') ?? 30));
     }
 
     /** Requests NVD allows per window: 50 with an API key, 5 without. */
@@ -336,7 +398,7 @@ class NvdSource extends AbstractSource
     /** Seconds between two requests: `min_interval`, else the window spread evenly over the limit. */
     private function spacing(): float
     {
-        return (float) $this->config('min_interval', $this->rateWindow() / $this->rateLimit());
+        return $this->numeric('min_interval') ?? $this->rateWindow() / $this->rateLimit();
     }
 
     /**
@@ -362,7 +424,7 @@ class NvdSource extends AbstractSource
         // 'clock' and 'sleep' are test seams (like 'handler'): a pacer that
         // really sleeps cannot be unit-tested in bounded time.
         $clock = $this->config('clock') ?? static fn (): float => microtime(true);
-        $sleep = $this->config('sleep') ?? static fn (float $seconds) => usleep((int) ceil($seconds * 1_000_000));
+        $sleep = $this->sleeper();
 
         static $local = [];
         for ($attempt = 0; $attempt < 100; $attempt++) {

@@ -17,9 +17,14 @@ use Psr\Log\LoggerInterface;
 use Psr\SimpleCache\CacheInterface;
 
 /**
- * CVE-Search adapter — works against the public CIRCL instance
- * (cve.circl.lu) or a self-hosted https://github.com/cve-search/cve-search.
- * Endpoints: /api/cve/{id}, /api/search/{vendor}/{product}
+ * CVE-Search adapter — for a self-hosted https://github.com/cve-search/cve-search
+ * (or anything that speaks its API). Endpoints: /api/cve/{id},
+ * /api/search/{vendor}/{product}.
+ *
+ * The public CIRCL service at cve.circl.lu no longer runs cve-search: it is a
+ * Vulnerability-Lookup instance that still answers these two paths as
+ * undocumented aliases. For it — or any Vulnerability-Lookup instance — use
+ * VulnerabilityLookupSource, which talks to the documented API.
  *
  * Self-hosted instances (CVE-Search-Docker) serve HTTPS with a self-signed
  * certificate — set CVE_SEARCH_VERIFY_TLS=false for those.
@@ -30,21 +35,45 @@ class CveSearchSource extends AbstractSource
 
     public const DEFAULT_BASE_URL = 'https://cve.circl.lu/api';
 
-    private string $uiBase;
+    protected string $uiBase;
 
     public function __construct(private readonly CpeResolver $cpeResolver, private readonly ?CpeLookup $cpeLookup = null, ?Client $http = null, array $options = [], ?LoggerInterface $logger = null, ?CacheInterface $cache = null)
     {
         $this->boot($options, $logger, $cache);
-        $base = rtrim((string) $this->config('base_url', self::DEFAULT_BASE_URL), '/');
+        $base = rtrim((string) $this->config('base_url', static::DEFAULT_BASE_URL), '/');
         // Record links point at the instance that answered: a self-hosted
         // Vulnerability-Lookup / cve-search serves its UI next to /api.
-        $this->uiBase = $base === self::DEFAULT_BASE_URL ? 'https://cve.circl.lu' : (preg_replace('#/api$#', '', $base) ?? $base);
+        $this->uiBase = preg_replace('#/api$#', '', $base) ?? $base;
         $this->http = $http ?? $this->makeClient($base.'/', options: ['verify' => (bool) $this->config('verify_tls', true)]);
     }
 
     public function name(): string
     {
         return 'cve_search';
+    }
+
+    /** How the service is called in log lines and error messages. */
+    protected function label(): string
+    {
+        return 'CVE-Search';
+    }
+
+    /** Request path (relative to the API base) of a vendor/product search; segments already URL-encoded. */
+    protected function searchPath(string $vendor, string $product): string
+    {
+        return "search/{$vendor}/{$product}";
+    }
+
+    /** Request path (relative to the API base) of one record; the id already URL-encoded. */
+    protected function recordPath(string $vulnId): string
+    {
+        return "cve/{$vulnId}";
+    }
+
+    /** Where a person can read the record on the instance that answered. */
+    protected function recordUrl(string $vulnId): string
+    {
+        return $this->uiBase.'/cve/'.rawurlencode($vulnId);
     }
 
     public function supports(PackageData $package): bool
@@ -69,7 +98,7 @@ class CveSearchSource extends AbstractSource
             $parts = $this->cpeResolver->parse23($cpe);
             // Encoded per segment: a crafted CPE must not be able to climb
             // out of search/ or append a query string.
-            $path = 'search/'.rawurlencode((string) $parts['vendor']).'/'.rawurlencode((string) $parts['product']);
+            $path = $this->searchPath(rawurlencode((string) $parts['vendor']), rawurlencode((string) $parts['product']));
             $keysByPath[$path][] = $key;
             $productByPath[$path] = $parts['product'];
         }
@@ -94,7 +123,7 @@ class CveSearchSource extends AbstractSource
         // AbstractSource::cachedLookup) — only complete answers are stored.
         $truncated = [];
         foreach (array_keys($pending) as $lookup) {
-            if (($cached = $this->cachedLookup('cve_search|'.$perPage.'|'.$lookup)) !== null) {
+            if (($cached = $this->cachedLookup($this->name().'|'.$perPage.'|'.$lookup)) !== null) {
                 $itemsByPath[$lookup] = $cached;
                 unset($pending[$lookup]);
             }
@@ -142,7 +171,7 @@ class CveSearchSource extends AbstractSource
                     $failed++;
                     $message = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
                     $firstReason ??= $message;
-                    $this->log('warning', '[vulns] CVE-Search query failed', [
+                    $this->log('warning', '[vulns] '.$this->label().' query failed', [
                         'lookup' => $path,
                         'error' => $message,
                     ]);
@@ -156,13 +185,13 @@ class CveSearchSource extends AbstractSource
 
         if ($failed > 0) {
             throw new \RuntimeException(sprintf(
-                'CVE-Search: %d of %d requests failed: %s', $failed, $requested, $firstReason,
+                '%s: %d of %d requests failed: %s', $this->label(), $failed, $requested, $firstReason,
             ));
         }
 
         foreach ($fetched as $lookup) {
             if (! isset($truncated[$lookup])) {
-                $this->cacheLookup('cve_search|'.$perPage.'|'.$lookup, $itemsByPath[$lookup]);
+                $this->cacheLookup($this->name().'|'.$perPage.'|'.$lookup, $itemsByPath[$lookup]);
             }
         }
 
@@ -186,9 +215,10 @@ class CveSearchSource extends AbstractSource
     public function fetchById(string $vulnId): ?VulnerabilityData
     {
         try {
-            $response = $this->http->get('cve/'.rawurlencode($vulnId));
-            // An unknown id answers 200 with a literal `null`.
-            $data = $this->decode($response, "CVE-Search lookup of {$vulnId}", allowNull: true);
+            $response = $this->http->get($this->recordPath(rawurlencode($vulnId)));
+            // An unknown id answers 200 with a literal `null` (cve-search) or
+            // an empty object (Vulnerability-Lookup).
+            $data = $this->decode($response, "{$this->label()} lookup of {$vulnId}", allowNull: true);
 
             return $data ? $this->parseCve($data) : null;
         } catch (GuzzleException $e) {
@@ -197,7 +227,7 @@ class CveSearchSource extends AbstractSource
             }
 
             // Fail safe: an unreachable instance is not "unknown CVE".
-            throw new \RuntimeException("CVE-Search lookup failed for {$vulnId}: {$e->getMessage()}", 0, $e);
+            throw new \RuntimeException("{$this->label()} lookup failed for {$vulnId}: {$e->getMessage()}", 0, $e);
         }
     }
 
@@ -341,7 +371,7 @@ class CveSearchSource extends AbstractSource
 
         return new VulnerabilityData(
             vulnId: $vulnId,
-            source: 'cve_search',
+            source: $this->name(),
             summary: $summary ? mb_substr($summary, 0, 255) : null,
             details: $summary,
             severity: $severity,
@@ -357,7 +387,7 @@ class CveSearchSource extends AbstractSource
             cwes: array_values(array_unique($cwes)),
             sourcePublishedAt: self::date($published),
             sourceModifiedAt: self::date($modified),
-            sourceUrl: $this->uiBase.'/cve/'.rawurlencode($vulnId),
+            sourceUrl: $this->recordUrl($vulnId),
             rawDataChecksum: hash('sha256', json_encode($item)),
             affectedRanges: $this->extractRanges($item, $product),
             extra: ['vulnerable_configuration' => $item['vulnerable_configuration'] ?? []],

@@ -14,7 +14,8 @@ enrichment and change classification. Extracted from and battle-tested in
 | `OsvSource` | OSV.dev — registry ecosystems, PURLs, **git commits** (submodules), batch + pagination + payload caching |
 | `GitHubAdvisorySource` | GitHub Advisory DB (GraphQL, token) **and repository security advisories** (REST, tokenless) |
 | `NvdSource` | NVD 2.0 by CPE, rate-limit aware, parses `configurations` into real version ranges |
-| `CveSearchSource` | CVE-Search / CIRCL by CPE |
+| `VulnerabilityLookupSource` | [Vulnerability-Lookup](https://www.vulnerability-lookup.org) (CIRCL's public instance or your own) by CPE |
+| `CveSearchSource` | a self-hosted cve-search by CPE |
 | `EuvdSource` | ENISA EU Vulnerability Database |
 | `SnykSource` | Snyk REST (token + org) |
 | `OssIndexSource` | Sonatype OSS Index — purl-native, 128-coordinate batches (free account required) |
@@ -290,6 +291,43 @@ Ranges tagged with a `product` (NVD configurations, EUVD product lists) are
 judged only when they name the package — a sibling product's `< 9.0.0`
 neither flags nor clears it. Config: `vulns.version_filter`.
 
+#### Ranges and wildcards — on both sides
+
+An advisory's range may be written in any common syntax, not only
+`>= a, < b`:
+
+| Syntax | Example | Read as |
+| --- | --- | --- |
+| comparators | `>=1.2 <2.0`, `= 1.4.2` | as written |
+| alternatives | `5.4.x \|\| 5.5.x`, `>=5.5,<5.5.21\|>=6,<6.1` | either |
+| wildcards | `1.2.*`, `1.x`, `*`, Gradle's `1.2.+` | `>= 1.2, < 1.3` … |
+| caret | `^1.2.3`, `^0.2.3`, `^0.0.3` | `< 2`, `< 0.3`, `< 0.0.4` |
+| tilde | `~1.2.3`, `~1.2`, also `~>` and `~=` | `< 1.3`, `< 2` |
+| hyphen | `1.2.3 - 2.3.4`, `1.2 - 2.3` | `<= 2.3.4`, `< 2.4` |
+| intervals | `[1.0,2.0)`, `(,1.0]`, `(,1.0],[1.2,)` | Maven / NuGet |
+
+And the **installed** version may itself be a constraint — what a manifest
+without a lock file declares, or what you type to ask about a release line:
+
+```php
+$search->search(new PackageData(name: 'axios', version: '1.x', ecosystem: 'npm'));       // everything that can affect 1.x
+$search->search(new PackageData(name: 'axios', version: '^1.18', ecosystem: 'npm'));     // … 1.18 and up, below 2
+$search->search(new PackageData(name: 'axios', version: '>=1.20', ecosystem: 'npm'));    // … 1.20 or later
+
+VersionRange::isVulnerable('^1.10', ['>= 1.7.0, < 1.16.0']);   // true  — the constraint reaches into the range
+VersionRange::isVulnerable('1.18.x', ['>= 1.7.0, < 1.16.0']);  // false — no version it allows is affected
+VersionSet::describe('^1.2.3 || 2.x');                         // ['>= 1.2.3, < 2', '>= 2, < 3']
+```
+
+A constraint is affected as soon as it **overlaps** an affected range, and
+cleared only when every range is readable and none shares a version with it.
+OSV is then asked without a version (it matches exact versions only) and its
+ranges are overlapped locally; OSS Index and Snyk, which need one exact
+version, are skipped. Where ecosystems disagree the wider reading is taken —
+`~1.2` is `>= 1.2, < 2.0` (Composer, RubyGems, PEP 440), not npm's `< 1.3` —
+because a wider set can only add findings. Anything unreadable (prose, `!=`,
+`latest`, a branch name) stays "can't tell", never "not affected".
+
 ### Completing ids: the GHSA for a CVE
 
 NVD and CVE-Search report a CVE with no aliases, and when OSV / GitHub had no
@@ -433,9 +471,10 @@ $one   = $nvd->fetchById('CVE-2021-44228');         // single advisory
 |---|---|---|---|
 | `OsvSource` | ecosystem + name + version; **purl** (deb/apk/rpm); **git commit** | — | Batch endpoint, pagination, payload cache. Ecosystems: composer, npm, pypi, maven, nuget, go, cargo, gem, cocoapods, pub, hex, swift, conan (+ deb/apk/rpm by purl). Unmapped ecosystems are skipped, not guessed. |
 | `NvdSource` | **CPE** | `api_key` recommended | 5 requests per *rolling* 30 s anonymous, 50 with a key — the source paces itself to that budget and to the six-second spacing NVD asks for (0.6 s with a key), shares the budget between workers through the cache, and waits out a window on NVD's 403 / 503 "too many connections". Parses `configurations` into real version ranges. |
-| `CveSearchSource` | **CPE** | — | CIRCL's Vulnerability-Lookup or a self-hosted cve-search. Reads versions from the CNA block, the CISA ADP block and the embedded legacy v4 record; a record with none stays undeterminable (see "Completing version ranges"). |
+| `VulnerabilityLookupSource` | **CPE** | — | Vulnerability-Lookup through its documented API (`/api/vulnerability/search/{vendor}/{product}`, `/api/vulnerability/{id}`) — `vulnerability.circl.lu` by default. Reads versions from the CNA block, the CISA ADP block and the embedded legacy v4 record; a record with none stays undeterminable (see "Completing version ranges"). Opt-in (`VULNS_VULNERABILITY_LOOKUP_ENABLED=true`) — and then set `VULNS_CVE_SEARCH_ENABLED=false`, see below. |
+| `CveSearchSource` | **CPE** | — | A self-hosted cve-search (`/api/search/…`, `/api/cve/…`), same record parsing. Its default URL, `cve.circl.lu`, is a Vulnerability-Lookup instance that only still answers those paths as undocumented aliases — both sources return identical data from it, so run one of them, preferably `VulnerabilityLookupSource`. |
 | `GitHubAdvisorySource` | ecosystem + name (registry); **owner/repo** (repository advisories) | `token` for the registry feed | Repository advisories work **without** a token — they cover projects that are in no registry database. |
-| `EuvdSource` | name + vendor | — | ENISA EUVD. Its search matches every product whose name *contains* the term, so each hit is checked: the product must be the package (same name, or `vendor/name`) and the vendor must be related to the package's vendor / scope / group — or, for a package without one, to its own name (`axios` by `axios`, `express` by `expressjs`). Pass a `CpeLookup` (5th constructor argument) and the vendor of the package's curated CPE counts as its vendor, which tells same-named products apart: the Rust crate `openssl` is not OpenSSL. `VULNS_EUVD_MATCH=name` accepts an exact product name from any vendor. EUVD complements OSV/GitHub; it does not replace them. |
+| `EuvdSource` | name + vendor | — | ENISA EUVD. Its search matches every product whose name *contains* the term, so each hit is checked: the product must be the package (same name, or `vendor/name`) and the vendor must be related to the package's vendor / scope / group — or, for a package without one, to its own name (`axios` by `axios`, `express` by `expressjs`). Pass a `CpeLookup` (5th constructor argument) and the vendor of the package's curated CPE counts as its vendor, which tells same-named products apart: the Rust crate `openssl` is not OpenSSL. `VULNS_EUVD_MATCH=name` accepts an exact product name from any vendor. A name with more records than `max_pages` allows ("core", "version") is searched again narrowed by EUVD's vendor filter, so records filed under a vendor name that does not contain the package's are not seen there. EUVD complements OSV/GitHub; it does not replace them. |
 | `SnykSource` | **purl** | `token` + `org_id` | Disabled unless both are configured. |
 | `OssIndexSource` | **purl** | `username` + `api_token` (free account) | Sonatype's dataset; batched 128 purls per request. Disabled without credentials — anonymous access 401s since 2025. Versionless packages are skipped. |
 | `RedHatSource` | name | — | Red Hat Security Data — the source for RPM-ecosystem and container base-image packages. Asked about OS-level packages only (`ecosystems` option: rpm/generic by default — npm's `tar` is not the RPM `tar`). NEVRA strings land in `extra`, not ranges. |
@@ -540,7 +579,8 @@ reverse proxy in front of any of them:
 |---|---|---|
 | `VULNS_OSV_URL` | OSV | `https://api.osv.dev` (a legacy `/v1` suffix is tolerated) |
 | `VULNS_NVD_URL` | NVD | `https://services.nvd.nist.gov/rest/json` |
-| `VULNS_CVE_SEARCH_URL` | CVE-Search / Vulnerability-Lookup | `https://cve.circl.lu/api` — record links follow the instance (`…/cve/CVE-…`); `VULNS_CVE_SEARCH_VERIFY_TLS=false` for a private CA |
+| `VULNS_VULNERABILITY_LOOKUP_URL` | Vulnerability-Lookup | `https://vulnerability.circl.lu/api` — record links follow the instance (`…/vuln/CVE-…`); `VULNS_VULNERABILITY_LOOKUP_VERIFY_TLS=false` for a private CA |
+| `VULNS_CVE_SEARCH_URL` | CVE-Search | `https://cve.circl.lu/api` — record links follow the instance (`…/cve/CVE-…`); `VULNS_CVE_SEARCH_VERIFY_TLS=false` for a private CA |
 | `VULNS_EUVD_URL` | EUVD | `https://euvdservices.enisa.europa.eu/api` |
 | `VULNS_SNYK_URL` | Snyk | `https://api.snyk.io` |
 | `VULNS_OSS_INDEX_URL` | OSS Index | `https://ossindex.sonatype.org/api/v3` |
